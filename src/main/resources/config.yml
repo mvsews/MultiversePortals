@@ -1,0 +1,246 @@
+# Multiverse Portals — minimal admin setup.
+# Install jar → server joins the open portal network.
+# Players build a frame + sign. Commands are optional.
+
+# Server fallback language: en (default), de, ru, zh
+# Used for console and when the player's client language is not shipped.
+language: en
+# Prefer each player's Minecraft/client language for plugin messages (fallback: language above)
+language-per-player: true
+
+# Empty values are generated on first run and saved here.
+server:
+  id: ""
+  # Public label on mp.mvse.ws / catalogs. Empty or "auto" → Minecraft MOTD.
+  display-name: ""
+  # Address others use for Transfer HERE. Empty/"auto" → server-ip, else local guess.
+  # Set a domain/IP if players join you via a different hostname than server-ip.
+  public-host: ""
+  # 0 = use server-port from server.properties / Bukkit
+  public-port: 0
+  # If public-host still looks LAN-only, optionally query api.ipify.org once (privacy: off)
+  discover-public-ip: false
+  # Catalog listing: auto | always | never
+  # auto = only when accept-transfers=true AND address is not private/LAN
+  list-publicly: auto
+  # If accept-transfers is off, write accepts-transfers=true once (needs one restart)
+  auto-enable-accept-transfers: true
+
+# Universal database (MySQL/MariaDB) — public hub catalog store.
+# Join the open network via HTTPS catalog-share (registry.enabled stays false by default).
+registry:
+  enabled: false
+  # Hub host: set JDBC here; never commit real credentials.
+  jdbc-url: ""
+  user: ""
+  password: ""
+  multi-opt-in: true
+  heartbeat-seconds: 900
+  # Mark offline on the map / directory after this long without a ping (1.5 hours)
+  stale-seconds: 5400
+  # Publish local portal coords + destinations into the public graph (HTTPS)
+  publish-portals: true
+  # federation-url: "https://mp.mvse.ws/mvp/v1"
+
+# Optional P2P HTTP API (required on catalog hub). Clients that only pull need no listen.
+federation:
+  enabled: false
+  # Hub: prefer 127.0.0.1 behind a reverse proxy. 0.0.0.0 only if you must bind all interfaces.
+  bind: "0.0.0.0"
+  port: 25765
+  path: "/mvp/v1"
+  # Local frame checks + PAIR peer beats. Presence on the public map uses catalog-share interval.
+  heartbeat-seconds: 900
+
+# Share MVP club list (host/port/federation_url). Default ON. Not the scanner probe_cache.
+catalog-share:
+  enabled: true
+  # Hub: serve the open catalog from the Universal DB + local club (domain proxy)
+  hub: false
+  push: true
+  pull: true
+  # Presence ping + catalog sync (~15 min). Extra push also fires when a portal is created/bound.
+  interval-seconds: 900
+  max-entries: 100
+  # Shared HMAC for /catalog/* (open-network default). Change on private clubs.
+  network-secret: "mvp-open-catalog"
+  # Hub may allow unsigned catalog/export (public directory of plugin hosts)
+  public-read: true
+  # When bootstrap-urls empty: auto-join official hub https://mp.mvse.ws/mvp/v1
+  auto-bootstrap: true
+  # Override hub(s), or set ["none"] / auto-bootstrap: false to opt out
+  bootstrap-urls: []
+  # bootstrap-urls:
+  #   - "https://mp.mvse.ws/mvp/v1"
+
+# Open mode: Trust not required (can still use /mvp trust or peers:)
+open-network:
+  enabled: true
+  everyone-can-create: true
+  require-trust: false
+  # Default: source reports inventory → destination grants the same items
+  # Toggle: /mvp items export off  |  /mvp items import off
+  default-export-inventory: true
+  default-import-inventory: true
+
+# Optional Trust / per-peer policies (or /mvp trust, /mvp policy)
+# peers:
+#   friend-smp:
+#     allow-travel: true
+#     export-inventory: true
+#     import-inventory: false
+#     export-score: true
+#     import-score: true
+
+signs:
+  auto-create: true
+
+# Do not send players to servers their client cannot join
+compatibility:
+  enabled: true
+
+# Public scanner pool for [Multi]/[mvp]/[portal]
+scanner:
+  enabled: true
+  # MineScan — https://data.minescan.xyz
+  base-url: "https://data.minescan.xyz"
+  # Cornbread / MCSS — second independent DB (~30M listings)
+  cornbread:
+    enabled: true
+    base-url: "https://api.cornbread2100.com/v1"
+    # 0 = keep listings even if lastSeen is old (probe verifies live)
+    max-age-hours: 0
+  # Slowstack — https://slowstack.tv (free API key in profile)
+  # Docs: https://slowstack.tv/docs/api-reference/servers
+  slowstack:
+    enabled: true
+    base-url: "https://slowstack.tv/api/v1"
+    api-key: ""
+    online-only: true
+    # Optional ISO countries, e.g. "US,DE,NL" — empty = worldwide
+    country-codes: ""
+  refresh-seconds: 90
+  sample-count: 40
+  min-players: 1
+  auth-mode: online
+  exclude-whitelist: true
+  # Drop stale listings (MineScan often returns dead hosts)
+  max-age-hours: 168
+  version-prefix: ""
+  probe-timeout-ms: 2500
+  max-attempts: 20
+  # On travel failure, refresh MineScan once and retry
+  refresh-on-fail: true
+  # Keep searching while standing on plate (after ~2s charge)
+  search-max-seconds: 45
+  # Bedrock (Floodgate): only transfer to hosts with Geyser on these UDP ports
+  require-geyser-for-bedrock: true
+  # Exact Bedrock protocol match (from RakNet pong vs Geyser client protocol)
+  require-bedrock-protocol-match: true
+  # Only used when protocol id is missing on client or dest. Same protocol always wins
+  # (Geyser MOTD often says 26.32 while client is 1.26.33 — both proto 1001).
+  require-bedrock-version-match: false
+  # Skip MOTD that looks closed (not related to player count)
+  reject-motd-keywords:
+    - whitelist
+    - white-list
+    - private
+    - closed
+    - invite only
+    - members only
+  # Bedrock pong must match this many times before bind
+  bind-confirm-probes: 2
+  confirm-before-transfer: true
+  bounce-back-seconds: 120
+  bedrock-ports: [19132, 19133]
+  # Remember probe results in SQLite (skip dead, fallback to verified)
+  memory-enabled: true
+  dead-ttl-seconds: 900
+  verified-max-age-hours: 72
+  verified-min-success: 1
+  verified-limit: 40
+  # On [Multi] create: search once, then lock portal to that host
+  bind-search-seconds: 90
+  bind-retry-seconds: 60
+  bind-prefer-geyser: true
+  # Bedrock creators only — Java creators accept Java-only hosts
+  bind-require-geyser: true
+  # Random portals avoid a destination that another portal within this radius (blocks,
+  # same world) already leads to. Used as a last resort only. 0 = off
+  avoid-duplicate-radius: 100
+  # Central hub pool (mp.mvse.ws) — pull candidates before public scanners
+  hub-pool:
+    enabled: true
+    pull-before-bind: true
+    pull-interval-seconds: 120
+    report-finds: true
+    prefer-hub-over-public: true
+    min-hub-candidates: 15
+
+# Consent for one-way transfers (no return portal on the other side)
+ready:
+  # If true, players must run /mvp ready (or chat "mvp ready") before one-way hops
+  confirm: false
+  hide-chat: true
+  persist: true
+
+# Incoming portal traffic filters (this server = destination)
+ingress:
+  enabled: true
+  # 0 = server max-players; portals leave reserve-slots free
+  max-online: 0
+  reserve-slots: 2
+  # Minimum score from origin (+ local mod_rep)
+  min-score: 0
+  deny-unknown-score: false
+  # 0 = unlimited; else max portal joins per hour
+  max-arrivals-per-hour: 40
+
+travel:
+  session-ttl-seconds: 180
+  use-transfer-packet: true
+
+# Update notifications for admins (major.minor only — patch bumps are silent)
+update:
+  check: true
+  check-url: "https://mp.mvse.ws/version.json"
+  check-interval-minutes: 180
+  # Auto-download jar into plugins/update/ when a major.minor update exists.
+  # Paper installs it on the next restart. /mvp update still works for a manual pull.
+  auto-download: true
+
+# Portal visuals (leave title/subtitle empty to use lang files)
+effects:
+  enabled: true
+  # Warmup while standing on the plate (20 ticks = 1s). Default ~5s.
+  charge-ticks: 100
+  idle-particles: false
+  title: ""
+  subtitle: ""
+  matter:
+    enabled: true
+    # nether | end | gateway
+    style: nether
+    particles: true
+
+score:
+  enabled: true
+  push-interval-seconds: 300
+
+# Local wool portals (ColorPortals-compatible, same server / worlds)
+local-portals:
+  enabled: true
+  walk-on-activation: true
+  allow-mobs: true
+  allow-items: true
+  allow-minecarts: true
+  portal-protection: true
+  use-permissions: false
+  # 0 = unlimited portals per color+channel ring
+  max-portals-per-group: 0
+  min-distance: 0
+  max-distance: 0
+
+# Optional per-key overrides (otherwise lang/en.yml, lang/de.yml, lang/ru.yml)
+# messages:
+#   need-ready: "<yellow>Custom override</yellow>"

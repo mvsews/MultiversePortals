@@ -1,0 +1,33 @@
+name: MultiversePortals
+version: ${version}
+main: io.multiverseportals.MultiversePortalsPlugin
+api-version: "1.21"
+authors: [Kosty]
+description: Cross-server and local wool portals. Build a sign — travel.
+softdepend: [Vault, ViaVersion, ViaBackwards, ViaRewind]
+commands:
+  mvp:
+    description: Multiverse Portals
+    usage: /mvp [help|status|…]
+    aliases: [multiverseportals, mportal, mpv]
+    permission: multiverseportals.use
+permissions:
+  multiverseportals.use:
+    default: true
+  multiverseportals.create:
+    description: Create portals with signs
+    default: true
+  multiverseportals.travel:
+    default: true
+  multiverseportals.admin:
+    default: op
+  multiverseportals.local.create.*:
+    default: true
+  multiverseportals.local.use.*:
+    default: true
+  multiverseportals.local.destroy.*:
+    default: true
+  multiverseportals.local.nodistance:
+    default: false
+  multiverseportals.local.max.*:
+    default: false

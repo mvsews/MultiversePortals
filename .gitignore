@@ -1,0 +1,35 @@
+.gradle/
+build/
+out/
+.idea/
+*.iml
+*.db
+.DS_Store
+*.log
+.env
+.env.*
+.secrets
+*.secrets
+
+# Built / published jars
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+
+# Private / ops — not for the public repo
+deploy/
+PROMO.md
+docs/SCANNERS.md
+probe_*.py
+check_*.py
+check-*.sh
+deploy-*.sh
+fix_spawn_portal.py
+reset_bind.py
+*.sql
+# Hub DDL is not published; schema is applied by the hub plugin at runtime.
+
+# Local scratch
+_*.py
+_*.sql
+*.tmp
+*.bak
