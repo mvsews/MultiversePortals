@@ -150,7 +150,7 @@
 
 ## 反馈
 
-有想法、发现 bug 或想提建议？请到 GitHub [创建 Issue](https://github.com/mvsews/MultiversePortals/issues)。
+有想法、发现 bug 或想提建议？请到 GitHub [创建 Issue](https://github.com/mvsews/MultiversePortals/issues/new/choose)。
 
 ---
 

@@ -150,7 +150,7 @@ Wool frame + wall sign (ColorPortals-style):
 
 ## Feedback
 
-Ideas, bugs, or suggestions? Please [open a GitHub Issue](https://github.com/mvsews/MultiversePortals/issues).
+Ideas, bugs, or suggestions? Please [open a GitHub Issue](https://github.com/mvsews/MultiversePortals/issues/new/choose).
 
 ---
 

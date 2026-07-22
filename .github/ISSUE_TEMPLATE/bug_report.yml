@@ -1,0 +1,68 @@
+name: Bug report
+description: Something does not work as expected
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve **Multiverse Portals**.
+        Fill in what happens now and what you expected.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Where did it happen?
+      options:
+        - Portal bind / Random [Multi]
+        - Travel / pressure plate / transfer
+        - Pair portals
+        - Local wool portals
+        - Public map / catalog (mp.mvse.ws)
+        - Bedrock / Geyser
+        - Install / config / update
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Plugin version
+      description: From `/mvp version` or the jar filename (e.g. 1.1.15)
+      placeholder: "1.1.15"
+    validations:
+      required: true
+  - type: input
+    id: paper
+    attributes:
+      label: Server software
+      description: Paper (or fork) + Minecraft version
+      placeholder: "Paper 1.21.10"
+    validations:
+      required: false
+  - type: textarea
+    id: current
+    attributes:
+      label: Current behavior
+      description: What happens now? Steps to reproduce if you can.
+      placeholder: |
+        1. Place [Multi] sign…
+        2. Stand on the plate…
+        3. Actually happens…
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should happen instead?
+      placeholder: The portal should bind to…
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Extra context
+      description: Logs, screenshots, server ids, or anything useful (no secrets/passwords).
+    validations:
+      required: false

@@ -150,7 +150,7 @@
 
 ## Обратная связь
 
-Идея, баг или предложение — [Issue на GitHub](https://github.com/mvsews/MultiversePortals/issues).
+Идея, баг или предложение — [Issue на GitHub](https://github.com/mvsews/MultiversePortals/issues/new/choose).
 
 ---
 

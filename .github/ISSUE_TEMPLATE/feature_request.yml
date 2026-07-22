@@ -1,0 +1,45 @@
+name: Suggestion / idea
+description: A feature or improvement idea
+title: "[Idea]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Share an idea to improve **Multiverse Portals**.
+        Describe how it works today (if relevant) and what you want instead.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Type
+      options:
+        - New feature
+        - UX / visuals
+        - Performance
+        - Docs / website
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: current
+    attributes:
+      label: Current behavior
+      description: How it works now (or “does not exist yet”).
+      placeholder: Right now, when I…
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected / proposed behavior
+      description: What should happen? Why would it help?
+      placeholder: It would be better if…
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Extra notes
+      description: Mockups, examples, related servers — optional.
+    validations:
+      required: false
