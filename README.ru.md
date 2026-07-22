@@ -9,7 +9,11 @@
 </p>
 
 <p align="center">
-  <a href="https://mp.mvse.ws/"><strong>Сайт и jar → mp.mvse.ws</strong></a>
+  <a href="https://mp.mvse.ws/"><strong>Сайт и jar → mp.mvse.ws</strong></a><br>
+  <a href="https://hangar.papermc.io/mvse/MultiversePortals">Hangar</a> ·
+  <a href="https://modrinth.com/project/multiverseportals">Modrinth</a> ·
+  <a href="https://www.curseforge.com/minecraft/bukkit-plugins/multiverse-portals-mvse">CurseForge</a> ·
+  <a href="https://github.com/mvsews/MultiversePortals/releases">GitHub</a>
 </p>
 
 <p align="center">
@@ -71,6 +75,8 @@
 | `[To]` + IP / порт (или `server-id`) | Всегда идёт на этот адрес |
 | `[Pair]` | Создаёт код — тот же код на другом сервере = туда-обратно |
 
+**Ручка:** кнопка у случайного `[Multi]` перебиндивает цель (сначала пиры клуба MVP). Не работает на `[To]` / `[Pair]`.
+
 Статус на табличке: `Portal` → `Scan...` → короткое имя цели + `->` (односторонний) или `<->` (пара).
 
 Для публичных односторонних прыжков игроки один раз пишут **`/mvp ready`**.
@@ -128,10 +134,13 @@
 |---------|----------|
 | `/mvp version` | Установленная vs свежая на mp.mvse.ws |
 | `/mvp ready` | Разрешить публичные односторонние переходы |
-| `/mvp lang …` | Сменить язык интерфейса |
+| `/mvp lang …` | Язык интерфейса (fallback сервера) |
+| `/mvp settings` | Карта, гости, перенос инвентаря |
 | `/mvp help` | Справка в игре |
 | `/mvp update` | Скачать обновление jar (админ) |
 | `/mvp scanner` | Статус публичного пула (админ) |
+
+**Инвентарь:** по умолчанию не переносится. Включить: `/mvp settings export on` / `import on` (или `/mvp items …`).
 
 ---
 

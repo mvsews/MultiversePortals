@@ -9,7 +9,11 @@
 </p>
 
 <p align="center">
-  <a href="https://mp.mvse.ws/"><strong>网站与 jar → mp.mvse.ws</strong></a>
+  <a href="https://mp.mvse.ws/"><strong>网站与 jar → mp.mvse.ws</strong></a><br>
+  <a href="https://hangar.papermc.io/mvse/MultiversePortals">Hangar</a> ·
+  <a href="https://modrinth.com/project/multiverseportals">Modrinth</a> ·
+  <a href="https://www.curseforge.com/minecraft/bukkit-plugins/multiverse-portals-mvse">CurseForge</a> ·
+  <a href="https://github.com/mvsews/MultiversePortals/releases">GitHub</a>
 </p>
 
 <p align="center">
@@ -71,6 +75,8 @@
 | `[To]` + IP/端口（或 `server-id`） | 始终去指定目的地 |
 | `[Pair]` | 生成配对码——另一台服填同一码即可往返 |
 
+**旋钮：** 随机 `[Multi]` 旁的按钮会切换固定目标（优先俱乐部 MVP 节点）。不适用于 `[To]` / `[Pair]`。
+
 状态：`Portal` → `Scan...` → 短目标名 + `->`（单向）或 `<->`（配对）。
 
 公开单向跳转前，玩家执行一次 **`/mvp ready`**。
@@ -128,10 +134,13 @@
 |------|------|
 | `/mvp version` | 已安装版本 vs mp.mvse.ws 最新版 |
 | `/mvp ready` | 允许公开单向旅行 |
-| `/mvp lang …` | 切换界面语言 |
+| `/mvp lang …` | 服务器回退语言 |
+| `/mvp settings` | 地图、客人、背包转移 |
 | `/mvp help` | 游戏内帮助 |
 | `/mvp update` | 下载更新 jar（管理） |
 | `/mvp scanner` | 公共池状态（管理） |
+
+**背包：** 默认不跨服转移。开启：`/mvp settings export on` / `import on`（或 `/mvp items …`）。
 
 ---
 

@@ -47,7 +47,7 @@ Hub plugin   --------->  Universal database
 ## Public hub
 
 - Landing (idea + jar + live graph): [https://mp.mvse.ws/](https://mp.mvse.ws/)
-- Versioned jar: [https://mp.mvse.ws/download/MultiversePortals-1.1.14.jar](https://mp.mvse.ws/download/MultiversePortals-1.1.14.jar)  
+- Versioned jar: [https://mp.mvse.ws/download/MultiversePortals-1.1.15.jar](https://mp.mvse.ws/download/MultiversePortals-1.1.15.jar)  
   (stable alias: `/download/MultiversePortals.jar`)
 - Version metadata: [https://mp.mvse.ws/version.json](https://mp.mvse.ws/version.json)
 - API: `https://mp.mvse.ws/mvp/v1`

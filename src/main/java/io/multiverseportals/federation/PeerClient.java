@@ -74,6 +74,15 @@ public final class PeerClient {
         return postCatalog(federationBaseUrl, path, body, Duration.ofSeconds(10));
     }
 
+    public Optional<JsonObject> postCatalog(
+            String federationBaseUrl,
+            String path,
+            JsonObject body,
+            Duration timeout
+    ) {
+        return postCatalogInternal(federationBaseUrl, path, body, timeout);
+    }
+
     public Optional<JsonObject> catalogExport(String federationBaseUrl) {
         return postCatalog(federationBaseUrl, "/catalog/export", new JsonObject());
     }
@@ -114,7 +123,7 @@ public final class PeerClient {
         ));
     }
 
-    private Optional<JsonObject> postCatalog(
+    private Optional<JsonObject> postCatalogInternal(
             String federationBaseUrl,
             String path,
             JsonObject body,
@@ -143,12 +152,22 @@ public final class PeerClient {
                     .build();
             HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() < 200 || resp.statusCode() >= 300) {
+                lastCatalogError = "HTTP " + resp.statusCode() + " " + url;
                 return Optional.empty();
             }
+            lastCatalogError = null;
             return Optional.of(gson.fromJson(resp.body(), JsonObject.class));
         } catch (Exception e) {
+            lastCatalogError = e.getClass().getSimpleName() + ": " + e.getMessage();
             return Optional.empty();
         }
+    }
+
+    /** Last catalog HTTP failure reason (for push logging); null if last call ok. */
+    private volatile String lastCatalogError;
+
+    public String lastCatalogError() {
+        return lastCatalogError;
     }
 
     private static String trimSlash(String url) {

@@ -319,9 +319,8 @@ public final class ScannerPoolService {
         f.addProperty("mcVersion", ver);
         f.addProperty("versionBranch", RegistryDatabase.versionBranchOf(ver));
         f.addProperty("limit", Math.max(40, config.scannerVerifiedLimit()));
-        // Match PortalBindService: binds require Geyser when the creator is Bedrock OR the
-        // server enforces bind-require-geyser. Otherwise the pull returns Java-only hosts that
-        // searchBindTarget will reject, so the already-confirmed Geyser pool never gets tried.
+        // Prefer dual-stack candidates from hub when configured; club peers are ordered first
+        // in PortalBindService and are accepted without Geyser for Java creators.
         boolean creatorBedrock = creator != null && BedrockPlayers.isBedrock(creator);
         boolean needBedrock = creatorBedrock || config.bindRequireGeyser();
         f.addProperty("needBedrock", needBedrock);

@@ -84,6 +84,16 @@ public final class FederationServer {
                 return;
             }
 
+            // Debug: next [Multi] bind candidate order (same logic as PortalBindService)
+            if ("/bind/preview".equals(sub) || "/bind/order".equals(sub)) {
+                if (!"GET".equalsIgnoreCase(method) && !"POST".equalsIgnoreCase(method)) {
+                    write(ex, 405, err("method"));
+                    return;
+                }
+                handleBindPreview(ex, method);
+                return;
+            }
+
             // Public server-icon.png from central registry
             if (sub != null && sub.startsWith("/icon/")) {
                 if (!"GET".equalsIgnoreCase(method) && !"HEAD".equalsIgnoreCase(method)) {
@@ -121,6 +131,11 @@ public final class FederationServer {
             // Open-network travel landing request (catalog secret or trusted peer)
             if ("/travel/offer".equals(sub)) {
                 handleTravelOfferHttp(ex, from, ts, sig, raw);
+                return;
+            }
+            // Leaf dest without MySQL: claim pending landing booked by a hub-registry origin
+            if ("/travel/claim".equals(sub)) {
+                handleTravelClaimHttp(ex, from, ts, sig, raw);
                 return;
             }
 
@@ -206,6 +221,99 @@ public final class FederationServer {
         try (OutputStream os = ex.getResponseBody()) {
             os.write(png);
         }
+    }
+
+    private void handleBindPreview(HttpExchange ex, String method) throws IOException {
+        boolean publicOk = config.catalogSharePublicRead();
+        String from = header(ex, "X-MVP-Server");
+        String ts = header(ex, "X-MVP-Timestamp");
+        String sig = header(ex, "X-MVP-Signature");
+        if (!publicOk) {
+            if (from == null || ts == null || sig == null
+                    || !Hmac.verify(config.catalogShareNetworkSecret(), from + "|" + ts + "|{}", sig)) {
+                write(ex, 403, err("bind preview auth required"));
+                return;
+            }
+        }
+
+        boolean needBedrock = false;
+        Boolean requireGeyser = null;
+        String portalId = null;
+        int limit = 40;
+        boolean shuffle = false;
+
+        if ("POST".equalsIgnoreCase(method)) {
+            byte[] bytes;
+            try (InputStream in = ex.getRequestBody()) {
+                bytes = in.readAllBytes();
+            }
+            String raw = new String(bytes, StandardCharsets.UTF_8);
+            if (!raw.isBlank()) {
+                JsonObject body = gson.fromJson(raw, JsonObject.class);
+                if (body != null) {
+                    if (body.has("needBedrock")) {
+                        needBedrock = body.get("needBedrock").getAsBoolean();
+                    }
+                    if (body.has("bedrock")) {
+                        needBedrock = body.get("bedrock").getAsBoolean();
+                    }
+                    if (body.has("requireGeyser") && !body.get("requireGeyser").isJsonNull()) {
+                        requireGeyser = body.get("requireGeyser").getAsBoolean();
+                    }
+                    if (body.has("portalId")) {
+                        portalId = body.get("portalId").getAsString();
+                    }
+                    if (body.has("limit")) {
+                        limit = body.get("limit").getAsInt();
+                    }
+                    if (body.has("shuffle")) {
+                        shuffle = body.get("shuffle").getAsBoolean();
+                    }
+                }
+            }
+        } else {
+            String q = ex.getRequestURI().getQuery();
+            if (q != null) {
+                for (String part : q.split("&")) {
+                    String[] kv = part.split("=", 2);
+                    if (kv.length != 2) {
+                        continue;
+                    }
+                    String key = kv[0];
+                    String val = java.net.URLDecoder.decode(kv[1], StandardCharsets.UTF_8);
+                    switch (key) {
+                        case "needBedrock", "bedrock" -> needBedrock = isTruthy(val);
+                        case "requireGeyser" -> requireGeyser = isTruthy(val);
+                        case "portalId", "portal" -> portalId = val;
+                        case "limit" -> {
+                            try {
+                                limit = Integer.parseInt(val.trim());
+                            } catch (NumberFormatException ignored) {
+                            }
+                        }
+                        case "shuffle" -> shuffle = isTruthy(val);
+                        default -> {
+                        }
+                    }
+                }
+            }
+        }
+
+        limit = Math.max(1, Math.min(200, limit));
+        var bind = plugin.portalBindService();
+        if (bind == null) {
+            write(ex, 503, err("bind service unavailable"));
+            return;
+        }
+        write(ex, 200, bind.previewBindOrder(needBedrock, requireGeyser, portalId, limit, shuffle));
+    }
+
+    private static boolean isTruthy(String val) {
+        if (val == null) {
+            return false;
+        }
+        String v = val.trim().toLowerCase(java.util.Locale.ROOT);
+        return v.equals("1") || v.equals("true") || v.equals("yes") || v.equals("on");
     }
 
     private void handlePortals(HttpExchange ex, String method, String sub) throws IOException {
@@ -514,6 +622,35 @@ public final class FederationServer {
         JsonObject body = gson.fromJson(raw.isBlank() ? "{}" : raw, JsonObject.class);
         JsonObject out = travelService.handleTravelOffer(body, from);
         write(ex, out.has("ok") && out.get("ok").getAsBoolean() ? 200 : 409, out);
+    }
+
+    private void handleTravelClaimHttp(HttpExchange ex, String from, String ts, String sig, String raw)
+            throws IOException {
+        if (from == null || ts == null || sig == null) {
+            write(ex, 403, err("travel claim auth required"));
+            return;
+        }
+        String payload = from + "|" + ts + "|" + raw;
+        if (!Hmac.verify(config.catalogShareNetworkSecret(), payload, sig)) {
+            Optional<TrustedPeer> peerOpt = db.findPeer(from);
+            if (peerOpt.isEmpty() || !Hmac.verify(peerOpt.get().sharedSecret(), payload, sig)) {
+                write(ex, 403, err("bad signature"));
+                return;
+            }
+        }
+        try {
+            if (Math.abs(System.currentTimeMillis() - Long.parseLong(ts)) > 120_000L) {
+                write(ex, 403, err("timestamp expired"));
+                return;
+            }
+        } catch (NumberFormatException e) {
+            write(ex, 403, err("bad timestamp"));
+            return;
+        }
+        JsonObject body = gson.fromJson(raw.isBlank() ? "{}" : raw, JsonObject.class);
+        // Claimant identity (X-MVP-Server) is the destination server id.
+        JsonObject out = travelService.handleTravelClaim(body, from);
+        write(ex, out.has("ok") && out.get("ok").getAsBoolean() ? 200 : 404, out);
     }
 
     private JsonObject policyGet(TrustedPeer peer) {

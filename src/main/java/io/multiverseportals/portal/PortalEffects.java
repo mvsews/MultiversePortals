@@ -24,6 +24,7 @@ import java.util.function.Consumer;
 
 /**
  * Portal charge: warmup on the plate (default ~5s), then hold while searching if needed.
+ * Destination name is shown via title / action bar (no floating ItemDisplay — maps render black).
  */
 public final class PortalEffects {
 
@@ -104,7 +105,6 @@ public final class PortalEffects {
                     return;
                 }
 
-                // Pick up a fresher label if TravelService resolved the dest mid-charge
                 String live = chargeDestLabels.get(uuid);
                 if (live != null && !live.isBlank() && !live.equals(destLabel[0])) {
                     destLabel[0] = live;
@@ -159,9 +159,13 @@ public final class PortalEffects {
         showChargeHud(player, label, 60);
     }
 
+    /** No-op: floating map icons rendered as a dark square; destination is HUD-only. */
+    public void setChargeIcon(Player player, byte[] png) {
+        // intentionally unused
+    }
+
     private void showChargeHud(Player player, String dest, int holdTicks) {
         String label = displayDest(dest);
-        // Empty title + dest as subtitle → smaller text (vanilla title is huge)
         player.showTitle(Title.title(
                 mm.deserialize(""),
                 mm.deserialize(config.effectsSubtitle().replace("%dest%", escapeMm(label))),

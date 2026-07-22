@@ -311,9 +311,9 @@ public final class RegistryDatabase {
               has_geyser=VALUES(has_geyser),
               has_floodgate=VALUES(has_floodgate),
               geyser_version=VALUES(geyser_version),
-              bedrock_port=VALUES(bedrock_port),
-              bedrock_protocol=VALUES(bedrock_protocol),
-              bedrock_version=VALUES(bedrock_version),
+              bedrock_port=IF(VALUES(bedrock_port)>0, VALUES(bedrock_port), bedrock_port),
+              bedrock_protocol=IF(VALUES(bedrock_protocol)>0, VALUES(bedrock_protocol), bedrock_protocol),
+              bedrock_version=IF(VALUES(bedrock_version) IS NOT NULL AND VALUES(bedrock_version)<>'', VALUES(bedrock_version), bedrock_version),
               accept_bedrock=VALUES(accept_bedrock),
               ingress_enabled=VALUES(ingress_enabled),
               ingress_max_online=VALUES(ingress_max_online),
@@ -325,7 +325,8 @@ public final class RegistryDatabase {
               import_inventory=VALUES(import_inventory),
               mvp_version=VALUES(mvp_version),
               last_heartbeat=VALUES(last_heartbeat),
-              last_online_at=VALUES(last_online_at)
+              last_online_at=VALUES(last_online_at),
+              last_offline_at=NULL
             """;
         try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
             String fedUrl = "http://" + config.publicHost() + ":" + config.federationPort() + config.federationPath();
@@ -419,6 +420,25 @@ public final class RegistryDatabase {
             String motd,
             byte[] iconPng
     ) {
+        upsertPeerAnnounce(serverId, displayName, publicHost, publicPort, federationUrl,
+                mcVersion, lastHeartbeat, caps, description, motd, iconPng, 0, 0);
+    }
+
+    public void upsertPeerAnnounce(
+            String serverId,
+            String displayName,
+            String publicHost,
+            int publicPort,
+            String federationUrl,
+            String mcVersion,
+            long lastHeartbeat,
+            ServerCaps caps,
+            String description,
+            String motd,
+            byte[] iconPng,
+            int onlinePlayers,
+            int maxPlayers
+    ) {
         if (!enabled() || serverId == null || serverId.isBlank()
                 || publicHost == null || publicHost.isBlank() || publicPort <= 0) {
             return;
@@ -448,16 +468,19 @@ public final class RegistryDatabase {
               accept_transfers=1,
               mc_version=VALUES(mc_version),
               protocol_version=VALUES(protocol_version),
+              max_players=VALUES(max_players),
+              online_players=VALUES(online_players),
               has_geyser=VALUES(has_geyser),
               has_floodgate=VALUES(has_floodgate),
               geyser_version=VALUES(geyser_version),
-              bedrock_port=VALUES(bedrock_port),
-              bedrock_protocol=VALUES(bedrock_protocol),
-              bedrock_version=VALUES(bedrock_version),
+              bedrock_port=IF(VALUES(bedrock_port)>0, VALUES(bedrock_port), bedrock_port),
+              bedrock_protocol=IF(VALUES(bedrock_protocol)>0, VALUES(bedrock_protocol), bedrock_protocol),
+              bedrock_version=IF(VALUES(bedrock_version) IS NOT NULL AND VALUES(bedrock_version)<>'', VALUES(bedrock_version), bedrock_version),
               accept_bedrock=VALUES(accept_bedrock),
               mvp_version=VALUES(mvp_version),
               last_heartbeat=VALUES(last_heartbeat),
-              last_online_at=VALUES(last_online_at)
+              last_online_at=VALUES(last_online_at),
+              last_offline_at=NULL
             """;
         try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
             int i = 1;
@@ -471,8 +494,8 @@ public final class RegistryDatabase {
             ps.setInt(i++, 1);
             ps.setString(i++, "");
             ps.setString(i++, motd == null ? "" : motd);
-            ps.setInt(i++, 0);
-            ps.setInt(i++, 0);
+            ps.setInt(i++, Math.max(0, maxPlayers));
+            ps.setInt(i++, Math.max(0, onlinePlayers));
             String mc = mcVersion == null ? "" : mcVersion;
             ps.setString(i++, mc);
             ps.setString(i++, mc);
@@ -1501,7 +1524,16 @@ public final class RegistryDatabase {
     }
 
     public Optional<RegistryTravel> takePendingTravel(String playerUuid) {
-        if (!enabled()) {
+        return takePendingTravel(playerUuid, config.serverId());
+    }
+
+    /**
+     * Consume PENDING inbound travel for a destination server id
+     * (local join, or hub /travel/claim for leaf servers without MySQL).
+     */
+    public Optional<RegistryTravel> takePendingTravel(String playerUuid, String toServerId) {
+        if (!enabled() || playerUuid == null || playerUuid.isBlank()
+                || toServerId == null || toServerId.isBlank()) {
             return Optional.empty();
         }
         long now = System.currentTimeMillis();
@@ -1512,7 +1544,7 @@ public final class RegistryDatabase {
             """;
         try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, playerUuid);
-            ps.setString(2, config.serverId());
+            ps.setString(2, toServerId);
             ps.setLong(3, now);
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) {
@@ -1905,6 +1937,30 @@ public final class RegistryDatabase {
             return rs.next() ? rs.getInt(1) : 0;
         } catch (SQLException e) {
             return 0;
+        }
+    }
+
+    /** Latest known online count for a scanned host (null if unknown). */
+    public Integer scannerOnlinePlayers(String host, int javaPort) {
+        if (!enabled() || host == null || host.isBlank() || javaPort <= 0) {
+            return null;
+        }
+        String sql = """
+            SELECT online_players FROM registry_scanner_hosts
+            WHERE host=? AND java_port=? LIMIT 1
+            """;
+        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, host.trim().toLowerCase(java.util.Locale.ROOT));
+            ps.setInt(2, javaPort);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) {
+                    return null;
+                }
+                Object o = rs.getObject(1);
+                return o == null ? null : ((Number) o).intValue();
+            }
+        } catch (SQLException e) {
+            return null;
         }
     }
 

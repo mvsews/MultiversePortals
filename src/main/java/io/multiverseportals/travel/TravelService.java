@@ -12,9 +12,12 @@ import io.multiverseportals.portal.PortalEffects;
 import io.multiverseportals.portal.PortalService;
 import io.multiverseportals.scanner.ServerProbe;
 import io.multiverseportals.util.InventoryCodec;
+import io.multiverseportals.util.ShapeHasher;
 import net.kyori.adventure.text.minimessage.MiniMessage;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
+import org.bukkit.World;
+import org.bukkit.block.Block;
 import org.bukkit.entity.Player;
 
 import java.util.ArrayList;
@@ -138,6 +141,9 @@ public final class TravelService {
                                     ? result.serverId()
                                     : result.host() + ":" + result.port());
                             fx.setChargeDestination(player, label);
+                            if (result.iconPng() != null && result.iconPng().length > 0) {
+                                fx.setChargeIcon(player, result.iconPng());
+                            }
                         }
                     }
                     applyResolve(player, result);
@@ -263,6 +269,9 @@ public final class TravelService {
                     ? result.serverId()
                     : result.host() + ":" + result.port());
             fx.setChargeDestination(player, label);
+            if (result.iconPng() != null && result.iconPng().length > 0) {
+                fx.setChargeIcon(player, result.iconPng());
+            }
         }
         if (session.chargeDone.get()) {
             finishOrAbort(player, session, result);
@@ -282,7 +291,7 @@ public final class TravelService {
         }
         // Confirm off the main thread (network I/O)
         Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
-            boolean ok = confirmDestination(player, result);
+            ResolveResult confirmed = confirmDestination(player, result);
             Bukkit.getScheduler().runTask(plugin, () -> {
                 if (!player.isOnline()) {
                     sessions.remove(player.getUniqueId());
@@ -292,7 +301,7 @@ public final class TravelService {
                 if (live == null) {
                     return; // left plate
                 }
-                if (!ok) {
+                if (confirmed == null) {
                     if (config.scannerMemoryEnabled() && result.javaPort() > 0) {
                         // already recorded inside confirmDestination
                     }
@@ -302,7 +311,7 @@ public final class TravelService {
                     startSearchLoop(player, live.portal);
                     return;
                 }
-                commitDepart(player, live, result);
+                commitDepart(player, live, confirmed);
             });
         });
     }
@@ -320,7 +329,7 @@ public final class TravelService {
     }
 
     /** Immediate re-check so we don't transfer to a host that just died / lied in MOTD. */
-    private boolean confirmDestination(Player player, ResolveResult result) {
+    private ResolveResult confirmDestination(Player player, ResolveResult result) {
         int timeout = Math.max(800, config.scannerProbeTimeoutMs());
         ServerProbe.Result r = ServerProbe.probe(result.host(), result.javaPort(), timeout);
         if (r.status() != ServerProbe.Status.OK) {
@@ -329,20 +338,28 @@ public final class TravelService {
                         null, null, null, null, null, null);
             }
             plugin.getLogger().warning("Confirm failed (java) " + result.host() + ":" + result.javaPort());
-            return false;
+            return null;
         }
-        if (BedrockPlayers.isBedrock(player) && config.scannerRequireGeyserForBedrock()) {
-            var bed = ServerProbe.findBedrock(result.host(), config.scannerBedrockPorts(), timeout);
+        if (BedrockPlayers.isBedrock(player)) {
+            var bed = ServerProbe.findBedrock(result.host(),
+                    bedrockPortsFor(result.host(), result.javaPort(), result.port()), timeout);
             if (bed.isEmpty()) {
                 if (config.scannerMemoryEnabled()) {
                     db.recordProbe(result.host(), result.javaPort(), Database.ProbeStatus.NO_GEYSER,
                             r.online(), r.max(), null, null, null, null);
                 }
-                return false;
+                // Treat as hard fail for this attempt — caller shows dest-unstable / retries.
+                // Bound path already uses bedrock-dest-java-only before confirm.
+                return null;
             }
             var info = bed.get();
-            if (info.port() != result.port()) {
-                plugin.getLogger().warning("Confirm bedrock port changed " + result.port() + "→" + info.port());
+            int transferPort = info.port();
+            if (transferPort != result.port()) {
+                plugin.getLogger().warning("Confirm bedrock port changed " + result.port() + "→" + transferPort
+                        + " for " + result.host());
+                result = ResolveResult.ok(
+                        result.host(), transferPort, result.javaPort(), result.serverId(),
+                        result.toPortalId(), result.type(), result.returnCapable(), result.iconPng());
             }
             int clientProto = BedrockPlayers.protocolVersion(player).orElse(0);
             String clientVer = BedrockPlayers.versionString(player);
@@ -355,10 +372,47 @@ public final class TravelService {
                 }
                 plugin.getLogger().warning("Confirm version/proto mismatch dest="
                         + info.protocol() + "/" + info.version() + " client=" + clientProto + "/" + clientVer);
-                return false;
+                return null;
             }
         }
-        return true;
+        return result;
+    }
+
+    /**
+     * Bedrock UDP candidates: sticky / registry announced port first, then scanner list,
+     * then Java TCP port last (clone-remote-port Geyser setups).
+     */
+    private List<Integer> bedrockPortsFor(String host, int javaPort, int... preferred) {
+        java.util.ArrayList<Integer> pref = new java.util.ArrayList<>();
+        if (preferred != null) {
+            for (int p : preferred) {
+                if (p > 0) {
+                    pref.add(p);
+                }
+            }
+        }
+        if (registry != null && registry.enabled() && host != null && javaPort > 0) {
+            registry.resolveServerIdByHost(host, javaPort).flatMap(registry::find).ifPresent(rs -> {
+                int bp = rs.caps() != null ? rs.caps().bedrockPort() : 0;
+                if (bp > 0) {
+                    pref.add(bp);
+                }
+            });
+        }
+        List<Integer> ports = ServerProbe.mergeBedrockPorts(pref, config.scannerBedrockPorts());
+        if (javaPort > 0 && !ports.contains(javaPort)) {
+            ports.add(javaPort);
+        }
+        return ports;
+    }
+
+    private String bedrockJavaOnlyMessage(Player player, String host) {
+        String ver = BedrockPlayers.versionString(player);
+        int proto = BedrockPlayers.protocolVersion(player).orElse(0);
+        return config.message(player, "bedrock-dest-java-only")
+                .replace("%host%", host == null ? "?" : host)
+                .replace("%version%", ver == null || ver.isBlank() ? String.valueOf(proto) : ver)
+                .replace("%proto%", String.valueOf(proto));
     }
 
     /** Player came back soon after a portal transfer → dest was not actually joinable. */
@@ -428,11 +482,11 @@ public final class TravelService {
             }
             int javaPort = port;
             int transferPort = javaPort;
-            // Same destination server: Bedrock → Geyser UDP, Java → Java TCP
-            if (BedrockPlayers.isBedrock(player) && config.scannerRequireGeyserForBedrock()) {
-                var bed = ServerProbe.findBedrock(host, config.scannerBedrockPorts(), timeout);
+            // Same destination server: Bedrock → Geyser UDP only, Java → Java TCP only
+            if (BedrockPlayers.isBedrock(player)) {
+                var bed = ServerProbe.findBedrock(host, bedrockPortsFor(host, javaPort), timeout);
                 if (bed.isEmpty()) {
-                    return ResolveResult.fail(config.message(player, "no-bedrock-targets"));
+                    return ResolveResult.fail(bedrockJavaOnlyMessage(player, host));
                 }
                 transferPort = bed.get().port();
             }
@@ -485,7 +539,8 @@ public final class TravelService {
             plugin.getLogger().info("Bound " + host + " has BAD_JOIN memory — probing anyway (sticky)");
         }
 
-        ServerProbe.Result r = ServerProbe.probe(host, javaPort, timeout);
+        ServerProbe.StatusInfo slp = ServerProbe.probeStatus(host, javaPort, timeout);
+        ServerProbe.Result r = new ServerProbe.Result(slp.status(), slp.online(), slp.max());
         if (r.status() == ServerProbe.Status.FULL) {
             return ResolveResult.fail(config.message(player, "target-full")
                     .replace("%target%", host)
@@ -499,53 +554,55 @@ public final class TravelService {
             // Sticky: keep bound_* — when dest wakes up, next plate step works again
             return ResolveResult.fail(config.message(player, "bound-inactive").replace("%host%", host));
         }
+        final byte[] favicon = slp.hasFavicon() ? slp.faviconPng() : null;
 
-        // Platform routing: Java → Java TCP, Bedrock → Geyser UDP (same host)
+        // Platform routing: Java → Java TCP only; Bedrock → Geyser UDP only (never cross)
         int transferPort = javaPort;
         if (BedrockPlayers.isBedrock(player)) {
-            if (config.scannerRequireGeyserForBedrock()) {
-                var bed = ServerProbe.findBedrock(host, config.scannerBedrockPorts(), timeout);
-                if (bed.isEmpty() && storedBedrockPort > 0) {
-                    // Fall back to sticky Bedrock port if live UDP probe flaked
-                    transferPort = storedBedrockPort;
-                } else if (bed.isEmpty()) {
-                    return ResolveResult.fail(config.message(player, "bound-inactive").replace("%host%", host));
-                } else {
-                    var info = bed.get();
-                    try {
-                        Thread.sleep(100);
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                    }
-                    var bed2 = ServerProbe.findBedrock(host, config.scannerBedrockPorts(), timeout);
-                    if (bed2.isEmpty() || bed2.get().protocol() != info.protocol()) {
-                        if (storedBedrockPort > 0) {
-                            transferPort = storedBedrockPort;
-                        } else {
-                            return ResolveResult.fail(config.message(player, "bound-inactive").replace("%host%", host));
-                        }
+            var bed = ServerProbe.findBedrock(host,
+                    bedrockPortsFor(host, javaPort, storedBedrockPort), timeout);
+            if (bed.isEmpty() && storedBedrockPort > 0) {
+                // Fall back to sticky Bedrock port if live UDP probe flaked
+                transferPort = storedBedrockPort;
+            } else if (bed.isEmpty()) {
+                // Java-only destination — Bedrock cannot join
+                return ResolveResult.fail(bedrockJavaOnlyMessage(player, host));
+            } else {
+                var info = bed.get();
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                }
+                var bed2 = ServerProbe.findBedrock(host,
+                        bedrockPortsFor(host, javaPort, info.port(), storedBedrockPort), timeout);
+                if (bed2.isEmpty() || bed2.get().protocol() != info.protocol()) {
+                    if (storedBedrockPort > 0) {
+                        transferPort = storedBedrockPort;
                     } else {
-                        int clientProto = BedrockPlayers.protocolVersion(player).orElse(0);
-                        String clientVer = BedrockPlayers.versionString(player);
-                        if (config.scannerRequireBedrockProtocolMatch()
-                                && !BedrockPlayers.canJoinDest(
-                                clientProto, info.protocol(), clientVer, info.version(),
-                                config.scannerRequireBedrockVersionMatch())) {
-                            if (config.scannerMemoryEnabled()) {
-                                db.recordProbe(host, javaPort, Database.ProbeStatus.BAD_PROTO,
-                                        r.online(), r.max(), info.port(), info.protocol(), info.version(), null);
-                            }
-                            return ResolveResult.fail(config.message(player, "bedrock-bound-mismatch")
-                                    .replace("%version%", clientVer.isBlank() ? String.valueOf(clientProto) : clientVer)
-                                    .replace("%proto%", String.valueOf(clientProto)));
+                        return ResolveResult.fail(bedrockJavaOnlyMessage(player, host));
+                    }
+                } else {
+                    int clientProto = BedrockPlayers.protocolVersion(player).orElse(0);
+                    String clientVer = BedrockPlayers.versionString(player);
+                    if (config.scannerRequireBedrockProtocolMatch()
+                            && !BedrockPlayers.canJoinDest(
+                            clientProto, info.protocol(), clientVer, info.version(),
+                            config.scannerRequireBedrockVersionMatch())) {
+                        if (config.scannerMemoryEnabled()) {
+                            db.recordProbe(host, javaPort, Database.ProbeStatus.BAD_PROTO,
+                                    r.online(), r.max(), info.port(), info.protocol(), info.version(), null);
                         }
-                        transferPort = info.port();
-                        // Remember Bedrock port on sticky for next time
-                        if (portal.boundPort() != transferPort || portal.boundJavaPort() != javaPort) {
-                            portal.setBoundPort(transferPort);
-                            portal.setBoundJavaPort(javaPort);
-                            db.savePortal(portal);
-                        }
+                        return ResolveResult.fail(config.message(player, "bedrock-bound-mismatch")
+                                .replace("%version%", clientVer.isBlank() ? String.valueOf(clientProto) : clientVer)
+                                .replace("%proto%", String.valueOf(clientProto)));
+                    }
+                    transferPort = info.port();
+                    // Remember Bedrock port on sticky for next time
+                    if (portal.boundPort() != transferPort || portal.boundJavaPort() != javaPort) {
+                        portal.setBoundPort(transferPort);
+                        portal.setBoundJavaPort(javaPort);
+                        db.savePortal(portal);
                     }
                 }
             }
@@ -558,47 +615,89 @@ public final class TravelService {
             }
         }
 
-        // MVP destination: land at a return portal so the player can step back home
+        // MVP destination: land at a return portal so the player can step back home.
+        // Works with MySQL registry OR open-network club (known_mvp / trusted peers) when
+        // registry.enabled=false on leaf servers like IT.
         String destServerId = "bound:" + host;
         String toPortalId = portal.boundDestPortalId();
         boolean returnCapable = false;
-        if (registry != null && registry.enabled()) {
-            Optional<String> resolved = registry.resolveServerIdByHost(host, javaPort);
-            if (resolved.isPresent()) {
-                destServerId = resolved.get();
-            }
-            Optional<RegistryServer> rs = destServerId.startsWith("bound:")
-                    ? Optional.empty()
-                    : registry.find(destServerId);
-            if (rs.isPresent() && rs.get().hasPlugin()) {
-                MvpLanding landing = requestMvpLanding(rs.get(), portal, player);
-                if (landing != null && landing.portalId() != null && !landing.portalId().isBlank()) {
-                    toPortalId = landing.portalId();
-                    returnCapable = landing.isReturn();
-                    // Only remember the reverse landing when it is a real return portal.
-                    if (landing.isReturn() && !landing.portalId().equals(portal.boundDestPortalId())) {
-                        portal.setBoundDestPortalId(landing.portalId());
-                        db.savePortal(portal);
-                    }
-                } else if (toPortalId != null && !toPortalId.isBlank()) {
-                    returnCapable = true;
-                } else {
-                    toPortalId = findRegistryReturnPortal(destServerId).orElse(null);
-                    returnCapable = toPortalId != null;
+        Optional<MvpDest> mvpDest = resolveMvpDestination(host, javaPort);
+        if (mvpDest.isPresent()) {
+            destServerId = mvpDest.get().serverId();
+            MvpLanding landing = requestMvpLanding(
+                    mvpDest.get().serverId(), mvpDest.get().federationUrl(), portal, player);
+            if (landing != null && landing.portalId() != null && !landing.portalId().isBlank()) {
+                toPortalId = landing.portalId();
+                returnCapable = landing.isReturn();
+                // Only remember the reverse landing when it is a real return portal.
+                if (landing.isReturn() && !landing.portalId().equals(portal.boundDestPortalId())) {
+                    portal.setBoundDestPortalId(landing.portalId());
+                    db.savePortal(portal);
                 }
+            } else if (toPortalId != null && !toPortalId.isBlank()) {
+                returnCapable = true;
+            } else {
+                toPortalId = findRegistryReturnPortal(destServerId).orElse(null);
+                returnCapable = toPortalId != null;
             }
         }
         plugin.getLogger().info("Route " + player.getName()
                 + (BedrockPlayers.isBedrock(player) ? " (Bedrock)" : " (Java)")
                 + " → " + host + ":" + transferPort + " [java " + javaPort + "]");
-        return ResolveResult.ok(host, transferPort, javaPort, destServerId, toPortalId, PortalType.MULTI, returnCapable);
+        return ResolveResult.ok(host, transferPort, javaPort, destServerId, toPortalId, PortalType.MULTI, returnCapable, favicon);
     }
+
+    /** Club / registry MVP destination used for /travel/offer. */
+    private record MvpDest(String serverId, String federationUrl) {}
 
     /** Landing decision returned by the destination server. */
     private record MvpLanding(String portalId, boolean isReturn) {}
 
+    /**
+     * Resolve MultiversePortals destination even when local registry JDBC is off:
+     * registry → known_mvp_servers → trusted peers → hub bootstrap federation URL.
+     */
+    private Optional<MvpDest> resolveMvpDestination(String host, int javaPort) {
+        if (host == null || host.isBlank()) {
+            return Optional.empty();
+        }
+        if (registry != null && registry.enabled()) {
+            Optional<String> resolved = registry.resolveServerIdByHost(host, javaPort);
+            if (resolved.isPresent()) {
+                Optional<RegistryServer> rs = registry.find(resolved.get());
+                if (rs.isPresent() && rs.get().hasPlugin()) {
+                    return Optional.of(new MvpDest(rs.get().serverId(), rs.get().federationUrl()));
+                }
+            }
+        }
+        Optional<Database.KnownMvpServer> known = db.findKnownMvpByHostPort(host, javaPort);
+        if (known.isPresent()) {
+            Database.KnownMvpServer k = known.get();
+            String fed = k.federationUrl();
+            if (fed == null || fed.isBlank()) {
+                fed = "http://" + k.publicHost() + ":25765/mvp/v1";
+            }
+            return Optional.of(new MvpDest(k.serverId(), fed));
+        }
+        for (TrustedPeer peer : db.listPeers()) {
+            if (!peer.hasPlugin()) {
+                continue;
+            }
+            if (!host.equalsIgnoreCase(peer.publicHost())) {
+                continue;
+            }
+            if (javaPort > 0 && peer.publicPort() > 0 && peer.publicPort() != javaPort) {
+                continue;
+            }
+            return Optional.of(new MvpDest(peer.serverId(), peer.federationUrl()));
+        }
+        // Leaf → club peer before known_mvp catches up: try dest's default federation port.
+        // Failed offers fail fast on connection-refused; vanilla sticky binds stay one-way.
+        return Optional.of(new MvpDest("bound:" + host, "http://" + host + ":25765/mvp/v1"));
+    }
+
     /** Ask dest MVP which portal to land on (and link reverse to this portal). */
-    private MvpLanding requestMvpLanding(RegistryServer dest, Portal fromPortal, Player player) {
+    private MvpLanding requestMvpLanding(String destServerId, String federationUrl, Portal fromPortal, Player player) {
         JsonObject offer = new JsonObject();
         offer.addProperty("fromServer", config.serverId());
         offer.addProperty("fromPortalId", fromPortal.id());
@@ -608,14 +707,23 @@ public final class TravelService {
             offer.addProperty("playerUuid", player.getUniqueId().toString());
         }
         Optional<JsonObject> resp = Optional.empty();
-        Optional<TrustedPeer> peer = db.findPeer(dest.serverId());
-        if (peer.isPresent()) {
-            resp = peerClient.offerTravel(peer.get(), offer);
+        if (destServerId != null && !destServerId.isBlank() && !destServerId.startsWith("bound:")) {
+            Optional<TrustedPeer> peer = db.findPeer(destServerId);
+            if (peer.isPresent()) {
+                resp = peerClient.offerTravel(peer.get(), offer);
+            }
         }
-        if (resp.isEmpty() && dest.federationUrl() != null && !dest.federationUrl().isBlank()) {
-            resp = peerClient.postCatalog(dest.federationUrl(), "/travel/offer", offer);
+        if (resp.isEmpty() && federationUrl != null && !federationUrl.isBlank()) {
+            // Short timeout: non-MVP destinations must not stall transfer for 10s.
+            boolean guessed = destServerId != null && destServerId.startsWith("bound:");
+            resp = guessed
+                    ? peerClient.postCatalog(federationUrl, "/travel/offer", offer, java.time.Duration.ofSeconds(2))
+                    : peerClient.postCatalog(federationUrl, "/travel/offer", offer);
         }
         if (resp.isEmpty()) {
+            plugin.getLogger().info("Travel offer failed for dest=" + destServerId
+                    + " fed=" + federationUrl
+                    + (peerClient.lastCatalogError() != null ? " (" + peerClient.lastCatalogError() + ")" : ""));
             return null;
         }
         JsonObject body = resp.get();
@@ -665,27 +773,27 @@ public final class TravelService {
                     player.sendMessage(mm.deserialize(config.prefix(player) + result.failMessage()));
                     return;
                 }
-                Runnable go = () -> {
+                java.util.function.Consumer<ResolveResult> go = dest -> {
                     pendingTransfers.put(player.getUniqueId(), new PendingTransfer(
-                            result.host(), result.javaPort(), portal.id(), System.currentTimeMillis()));
-                    depart(player, portal, result.host(), result.port(), result.serverId(),
-                            result.toPortalId(), result.type(), result.returnCapable());
+                            dest.host(), dest.javaPort(), portal.id(), System.currentTimeMillis()));
+                    depart(player, portal, dest.host(), dest.port(), dest.serverId(),
+                            dest.toPortalId(), dest.type(), dest.returnCapable());
                 };
                 if (!config.scannerConfirmBeforeTransfer()) {
-                    go.run();
+                    go.accept(result);
                     return;
                 }
                 Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
-                    boolean ok = confirmDestination(player, result);
+                    ResolveResult confirmed = confirmDestination(player, result);
                     Bukkit.getScheduler().runTask(plugin, () -> {
                         if (!player.isOnline()) {
                             return;
                         }
-                        if (!ok) {
+                        if (confirmed == null) {
                             player.sendMessage(mm.deserialize(config.prefix(player) + config.message(player, "dest-unstable")));
                             return;
                         }
-                        go.run();
+                        go.accept(confirmed);
                     });
                 });
             });
@@ -738,7 +846,9 @@ public final class TravelService {
                 continue;
             }
             tried++;
-            ServerProbe.Result r = ServerProbe.probe(peer.publicHost(), peer.publicPort(), timeout);
+            ServerProbe.StatusInfo infoSlp = ServerProbe.probeStatus(peer.publicHost(), peer.publicPort(), timeout);
+            ServerProbe.Result r = new ServerProbe.Result(infoSlp.status(), infoSlp.online(), infoSlp.max());
+            byte[] favicon = infoSlp.hasFavicon() ? infoSlp.faviconPng() : null;
             plugin.getLogger().info("Probe " + peer.publicHost() + ":" + peer.publicPort()
                     + " → " + r.status() + (r.online() >= 0 ? " (" + r.online() + "/" + r.max() + ")" : ""));
             if (r.status() == ServerProbe.Status.FULL) {
@@ -762,9 +872,11 @@ public final class TravelService {
             Integer bedPort = null;
             Integer bedProto = null;
             String bedVer = null;
-            if (bedrock && config.scannerRequireGeyserForBedrock()) {
+            if (bedrock) {
                 var bed = ServerProbe.findBedrock(
-                        peer.publicHost(), config.scannerBedrockPorts(), timeout);
+                        peer.publicHost(),
+                        bedrockPortsFor(peer.publicHost(), peer.publicPort()),
+                        timeout);
                 if (bed.isEmpty()) {
                     noGeyserHits++;
                     if (memory) {
@@ -828,7 +940,7 @@ public final class TravelService {
             }
             return ResolveResult.ok(
                     peer.publicHost(), transferPort, peer.publicPort(), peer.serverId(),
-                    null, PortalType.MULTI, !oneWay
+                    null, PortalType.MULTI, !oneWay, favicon
             );
         }
         if (skippedKnownDead > 0) {
@@ -849,7 +961,7 @@ public final class TravelService {
         }
         if (bedrock && noGeyserHits > 0 && noGeyserHits >= (tried - deadHits - fullHits)) {
             plugin.getLogger().warning("Bedrock: " + noGeyserHits + " Java servers without Geyser skipped");
-            return ResolveResult.fail(config.message(player, "no-bedrock-targets"));
+            return ResolveResult.fail(bedrockJavaOnlyMessage(player, null));
         }
         plugin.getLogger().warning("No live server after " + tried + " probes (" + deadHits + " dead, "
                 + fullHits + " full, noGeyser=" + noGeyserHits + ", badProto=" + badProtoHits + ")");
@@ -1007,64 +1119,171 @@ public final class TravelService {
         if (registry != null && registry.enabled()) {
             Optional<RegistryDatabase.RegistryTravel> incoming = registry.takePendingTravel(player.getUniqueId().toString());
             if (incoming.isPresent()) {
-                RegistryDatabase.RegistryTravel t = incoming.get();
-
-                IngressPolicy.DenyReason deny = ingress.check(player, t.score());
-                if (deny != IngressPolicy.DenyReason.OK) {
-                    plugin.getLogger().info("Ingress rejected " + player.getName() + ": " + deny);
-                    player.kick(mm.deserialize(config.prefix(player) + ingress.reasonMessage(player, deny)));
-                    return;
-                }
-                ingress.recordArrival();
-
-                if (t.toPortalId() != null) {
-                    boolean landedAtPortal = db.findPortal(t.toPortalId()).map(portal -> {
-                        var world = Bukkit.getWorld(portal.frame().world());
-                        if (world == null) {
-                            return false;
-                        }
-                        Location loc = portal.frame().toLocation(world);
-                        // Stand in front of the portal so plate isn't instantly re-triggered (join grace also helps)
-                        float yaw = loc.getYaw();
-                        double rad = Math.toRadians(yaw);
-                        loc.add(-Math.sin(rad) * 1.5, 0.1, Math.cos(rad) * 1.5);
-                        player.teleportAsync(loc);
-                        String key = t.landingReturn() ? "arrived-at-return" : "arrived-placed-at-portal";
-                        player.sendMessage(mm.deserialize(config.prefix(player) + config.message(player, key)
-                                .replace("%from%", t.fromServer() == null ? "?" : t.fromServer())));
-                        return true;
-                    }).orElse(false);
-                    // Landing portal vanished before arrival → fall back to a normal-spawn notice.
-                    if (!landedAtPortal && t.fromServer() != null) {
-                        player.sendMessage(mm.deserialize(config.prefix(player) + config.message(player, "arrived-no-return-portal")));
-                    }
-                } else if (t.fromServer() != null) {
-                    player.sendMessage(mm.deserialize(config.prefix(player) + config.message(player, "arrived-no-return-portal")));
-                }
-                boolean importItems = config.policyFor(t.fromServer()).importInventory();
-                if (t.carry() && t.inventoryB64() != null && importItems) {
-                    byte[] data = Base64.getDecoder().decode(t.inventoryB64());
-                    InventoryCodec.decodeInto(data, player.getInventory());
-                } else if (t.carry() && t.inventoryB64() != null) {
-                    player.sendMessage(mm.deserialize(config.prefix(player) + config.message(player, "arriving-clean")));
-                }
-                if (t.score() != null) {
-                    db.upsertRemoteScore(player.getUniqueId(), t.fromServer(), t.score());
-                }
+                applyRegistryTravel(player, incoming.get());
                 return;
             }
         }
 
+        // Leaf dest / offer-written SQLite session (no MySQL registry on this node)
+        Optional<TravelSession> localIncoming = db.takePendingSession(player.getUniqueId());
+        if (localIncoming.isPresent()) {
+            applyLocalTravel(player, localIncoming.get());
+            return;
+        }
+
+        // Leaf without open federation: origin hub already saved registry_travel — claim via HTTPS.
+        if ((registry == null || !registry.enabled()) && config.catalogShareEnabled()
+                && !config.catalogShareBootstrapUrls().isEmpty()) {
+            final UUID uuid = player.getUniqueId();
+            Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+                Optional<RegistryDatabase.RegistryTravel> claimed = claimPendingFromHub(uuid);
+                Bukkit.getScheduler().runTask(plugin, () -> {
+                    if (!player.isOnline()) {
+                        return;
+                    }
+                    if (claimed.isPresent()) {
+                        applyRegistryTravel(player, claimed.get());
+                        return;
+                    }
+                    finishNormalJoin(player);
+                });
+            });
+            return;
+        }
+
+        finishNormalJoin(player);
+    }
+
+    private void finishNormalJoin(Player player) {
         if (config.ingressEnabled() && db.isDenied(player.getUniqueId())) {
             player.kick(mm.deserialize(config.prefix(player) + config.message(player, "ingress-denied")));
             return;
         }
-
         db.loadInventory(player.getUniqueId()).ifPresent(data -> {
             if (isEmpty(player)) {
                 InventoryCodec.decodeInto(data, player.getInventory());
             }
         });
+    }
+
+    private void applyRegistryTravel(Player player, RegistryDatabase.RegistryTravel t) {
+        db.clearPendingSessions(player.getUniqueId());
+
+        if (!config.acceptInbound()) {
+            plugin.getLogger().info("Inbound closed — kicking " + player.getName()
+                    + " from " + t.fromServer());
+            player.kick(mm.deserialize(config.prefix(player) + config.message(player, "guests-closed")));
+            return;
+        }
+
+        IngressPolicy.DenyReason deny = ingress.check(player, t.score());
+        if (deny != IngressPolicy.DenyReason.OK) {
+            plugin.getLogger().info("Ingress rejected " + player.getName() + ": " + deny);
+            player.kick(mm.deserialize(config.prefix(player) + ingress.reasonMessage(player, deny)));
+            return;
+        }
+        ingress.recordArrival();
+
+        if (t.toPortalId() != null) {
+            boolean landedAtPortal = db.findPortal(t.toPortalId()).map(portal -> {
+                Location loc = arrivalStandLocation(portal);
+                if (loc == null) {
+                    return false;
+                }
+                player.teleportAsync(loc);
+                String key = t.landingReturn() ? "arrived-at-return" : "arrived-placed-at-portal";
+                player.sendMessage(mm.deserialize(config.prefix(player) + config.message(player, key)
+                        .replace("%from%", t.fromServer() == null ? "?" : t.fromServer())));
+                return true;
+            }).orElse(false);
+            if (!landedAtPortal && t.fromServer() != null) {
+                player.sendMessage(mm.deserialize(config.prefix(player) + config.message(player, "arrived-no-return-portal")));
+            }
+        } else if (t.fromServer() != null) {
+            player.sendMessage(mm.deserialize(config.prefix(player) + config.message(player, "arrived-no-return-portal")));
+        }
+        boolean importItems = config.policyFor(t.fromServer()).importInventory();
+        if (t.carry() && t.inventoryB64() != null && importItems) {
+            byte[] data = Base64.getDecoder().decode(t.inventoryB64());
+            InventoryCodec.decodeInto(data, player.getInventory());
+        } else if (t.carry() && t.inventoryB64() != null) {
+            player.sendMessage(mm.deserialize(config.prefix(player) + config.message(player, "arriving-clean")));
+        }
+        if (t.score() != null) {
+            db.upsertRemoteScore(player.getUniqueId(), t.fromServer(), t.score());
+        }
+    }
+
+    private void applyLocalTravel(Player player, TravelSession t) {
+        if (!config.acceptInbound()) {
+            plugin.getLogger().info("Inbound closed — kicking " + player.getName()
+                    + " from " + t.fromServer());
+            player.kick(mm.deserialize(config.prefix(player) + config.message(player, "guests-closed")));
+            return;
+        }
+        ingress.recordArrival();
+        boolean landingReturn = t.scoreSnapshotJson() != null
+                && t.scoreSnapshotJson().contains("\"landingReturn\":true");
+        if (t.toPortalId() != null) {
+            boolean landedAtPortal = db.findPortal(t.toPortalId()).map(portal -> {
+                Location loc = arrivalStandLocation(portal);
+                if (loc == null) {
+                    return false;
+                }
+                player.teleportAsync(loc);
+                String key = landingReturn ? "arrived-at-return" : "arrived-placed-at-portal";
+                player.sendMessage(mm.deserialize(config.prefix(player) + config.message(player, key)
+                        .replace("%from%", t.fromServer() == null ? "?" : t.fromServer())));
+                return true;
+            }).orElse(false);
+            if (!landedAtPortal && t.fromServer() != null) {
+                player.sendMessage(mm.deserialize(config.prefix(player) + config.message(player, "arrived-no-return-portal")));
+            }
+        } else if (t.fromServer() != null) {
+            player.sendMessage(mm.deserialize(config.prefix(player) + config.message(player, "arrived-no-return-portal")));
+        }
+    }
+
+    /** Ask catalog hub for a PENDING arrival booked by a registry-enabled origin. */
+    private Optional<RegistryDatabase.RegistryTravel> claimPendingFromHub(UUID playerUuid) {
+        JsonObject body = new JsonObject();
+        body.addProperty("playerUuid", playerUuid.toString());
+        body.addProperty("toServer", config.serverId());
+        for (String hub : config.catalogShareBootstrapUrls()) {
+            if (hub == null || hub.isBlank() || "none".equalsIgnoreCase(hub)) {
+                continue;
+            }
+            Optional<JsonObject> resp = peerClient.postCatalog(
+                    hub, "/travel/claim", body, java.time.Duration.ofSeconds(4));
+            if (resp.isEmpty()) {
+                continue;
+            }
+            JsonObject j = resp.get();
+            if (!j.has("ok") || !j.get("ok").getAsBoolean()) {
+                continue;
+            }
+            plugin.getLogger().info("Claimed hub travel landing for " + playerUuid
+                    + " portal=" + (j.has("toPortalId") ? j.get("toPortalId").getAsString() : "?"));
+            return Optional.of(new RegistryDatabase.RegistryTravel(
+                    j.has("sessionId") ? j.get("sessionId").getAsString() : UUID.randomUUID().toString(),
+                    playerUuid.toString(),
+                    j.has("fromServer") && !j.get("fromServer").isJsonNull()
+                            ? j.get("fromServer").getAsString() : null,
+                    config.serverId(),
+                    j.has("toPortalId") && !j.get("toPortalId").isJsonNull()
+                            ? j.get("toPortalId").getAsString() : null,
+                    j.has("portalType") && !j.get("portalType").isJsonNull()
+                            ? j.get("portalType").getAsString() : PortalType.MULTI.name(),
+                    j.has("carry") && j.get("carry").getAsBoolean(),
+                    j.has("inventoryB64") && !j.get("inventoryB64").isJsonNull()
+                            ? j.get("inventoryB64").getAsString() : null,
+                    j.has("score") && !j.get("score").isJsonNull()
+                            ? j.get("score").getAsDouble() : null,
+                    !j.has("landingReturn") || j.get("landingReturn").isJsonNull()
+                            || j.get("landingReturn").getAsBoolean()
+            ));
+        }
+        return Optional.empty();
     }
 
     public void clearSession(UUID uuid) {
@@ -1073,6 +1292,57 @@ public final class TravelService {
 
     public boolean isTravelPending(UUID uuid) {
         return sessions.containsKey(uuid);
+    }
+
+    /**
+     * Hub side: leaf destination claims a PENDING registry_travel row for itself.
+     * {@code claimedFrom} is X-MVP-Server of the destination (must match to_server).
+     */
+    public JsonObject handleTravelClaim(JsonObject body, String claimedFrom) {
+        JsonObject out = new JsonObject();
+        if (registry == null || !registry.enabled()) {
+            out.addProperty("ok", false);
+            out.addProperty("error", "registry disabled");
+            return out;
+        }
+        if (claimedFrom == null || claimedFrom.isBlank()) {
+            out.addProperty("ok", false);
+            out.addProperty("error", "from required");
+            return out;
+        }
+        String playerUuid = body != null && body.has("playerUuid") && !body.get("playerUuid").isJsonNull()
+                ? body.get("playerUuid").getAsString() : null;
+        if (playerUuid == null || playerUuid.isBlank()) {
+            out.addProperty("ok", false);
+            out.addProperty("error", "playerUuid required");
+            return out;
+        }
+        Optional<RegistryDatabase.RegistryTravel> t = registry.takePendingTravel(playerUuid, claimedFrom);
+        if (t.isEmpty()) {
+            out.addProperty("ok", false);
+            out.addProperty("error", "no pending");
+            return out;
+        }
+        RegistryDatabase.RegistryTravel travel = t.get();
+        out.addProperty("ok", true);
+        out.addProperty("sessionId", travel.sessionId());
+        out.addProperty("fromServer", travel.fromServer());
+        out.addProperty("toServer", travel.toServer());
+        if (travel.toPortalId() != null) {
+            out.addProperty("toPortalId", travel.toPortalId());
+        }
+        out.addProperty("portalType", travel.portalType() == null ? PortalType.MULTI.name() : travel.portalType());
+        out.addProperty("carry", travel.carry());
+        if (travel.inventoryB64() != null) {
+            out.addProperty("inventoryB64", travel.inventoryB64());
+        }
+        if (travel.score() != null) {
+            out.addProperty("score", travel.score());
+        }
+        out.addProperty("landingReturn", travel.landingReturn());
+        plugin.getLogger().info("Travel claim: " + claimedFrom + " took pending for " + playerUuid
+                + " → portal " + travel.toPortalId());
+        return out;
     }
 
     public JsonObject handleRemoteOffer(TrustedPeer peer, JsonObject body) {
@@ -1136,10 +1406,69 @@ public final class TravelService {
         out.addProperty("x", landing.frame().x());
         out.addProperty("y", landing.frame().y());
         out.addProperty("z", landing.frame().z());
+        // Origin may have registry.enabled=false — persist pending arrival here so join teleports.
+        if (body.has("playerUuid") && !body.get("playerUuid").isJsonNull()) {
+            String playerUuid = body.get("playerUuid").getAsString();
+            if (playerUuid != null && !playerUuid.isBlank()) {
+                rememberInboundLanding(playerUuid, fromServer, landing.id(), isReturn);
+            }
+        }
         plugin.getLogger().info("Travel offer: land at " + landing.id()
                 + (isReturn ? " for return to " + fromServer : " (fallback placement, no return to " + fromServer + ")")
                 + (isReturn && fromPortalId != null ? " portal " + fromPortalId : ""));
         return out;
+    }
+
+    /**
+     * Dest-side booking: origin leaf servers cannot write MySQL registry_travel.
+     * Persist PENDING here (registry and/or local SQLite) keyed by player UUID.
+     */
+    private void rememberInboundLanding(
+            String playerUuid,
+            String fromServer,
+            String landingPortalId,
+            boolean isReturn
+    ) {
+        String sessionId = UUID.randomUUID().toString();
+        long now = System.currentTimeMillis();
+        long ttlMs = config.sessionTtlSeconds() * 1000L;
+        if (registry != null && registry.enabled()) {
+            registry.saveTravel(
+                    sessionId,
+                    playerUuid,
+                    fromServer,
+                    config.serverId(),
+                    landingPortalId,
+                    PortalType.MULTI.name(),
+                    false,
+                    null,
+                    null,
+                    ttlMs,
+                    isReturn
+            );
+        }
+        try {
+            UUID uuid = UUID.fromString(playerUuid);
+            db.saveSession(new TravelSession(
+                    sessionId,
+                    uuid,
+                    fromServer,
+                    config.serverId(),
+                    null,
+                    landingPortalId,
+                    PortalType.MULTI,
+                    false,
+                    null,
+                    "{\"landingReturn\":" + isReturn + "}",
+                    TravelSession.Status.PENDING,
+                    now,
+                    now + ttlMs
+            ));
+        } catch (IllegalArgumentException e) {
+            plugin.getLogger().warning("rememberInboundLanding bad uuid: " + playerUuid);
+        } catch (RuntimeException e) {
+            plugin.getLogger().warning("rememberInboundLanding: " + e.getMessage());
+        }
     }
 
     private Optional<Portal> findLocalReturnPortal(String fromServer, String fromHost, int fromPort) {
@@ -1169,6 +1498,14 @@ public final class TravelService {
                         score = 70;
                     }
                 }
+                if (score < 70) {
+                    Optional<Database.KnownMvpServer> known = db.findKnownMvpByHostPort(
+                            p.boundHost(),
+                            p.boundJavaPort() > 0 ? p.boundJavaPort() : p.boundPort());
+                    if (known.isPresent() && fromServer.equalsIgnoreCase(known.get().serverId())) {
+                        score = Math.max(score, 70);
+                    }
+                }
             } else {
                 continue;
             }
@@ -1184,6 +1521,52 @@ public final class TravelService {
             }
         }
         return Optional.ofNullable(best);
+    }
+
+    /**
+     * Stand on the portal's pressure plate (sign is usually 2 blocks above).
+     * Join grace in PortalListener prevents an instant reverse transfer.
+     */
+    private Location arrivalStandLocation(Portal portal) {
+        if (portal == null || portal.frame() == null) {
+            return null;
+        }
+        World world = Bukkit.getWorld(portal.frame().world());
+        if (world == null) {
+            return null;
+        }
+        PortalFrame f = portal.frame();
+        int[] dys = { -2, -1, -3, 0 };
+        for (int dy : dys) {
+            Block b = world.getBlockAt(f.x(), f.y() + dy, f.z());
+            if (ShapeHasher.isPressurePlate(b.getType())) {
+                Location loc = new Location(world, f.x() + 0.5, f.y() + dy + 0.05, f.z() + 0.5);
+                loc.setYaw(f.yaw());
+                return loc;
+            }
+        }
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                if (dx == 0 && dz == 0) {
+                    continue;
+                }
+                for (int dy : dys) {
+                    Block b = world.getBlockAt(f.x() + dx, f.y() + dy, f.z() + dz);
+                    if (ShapeHasher.isPressurePlate(b.getType())) {
+                        Location loc = new Location(
+                                world, f.x() + dx + 0.5, f.y() + dy + 0.05, f.z() + dz + 0.5);
+                        loc.setYaw(f.yaw());
+                        return loc;
+                    }
+                }
+            }
+        }
+        // No plate found — stand in front of the sign as before.
+        Location loc = f.toLocation(world);
+        float yaw = loc.getYaw();
+        double rad = Math.toRadians(yaw);
+        loc.add(-Math.sin(rad) * 1.5, 0.1, Math.cos(rad) * 1.5);
+        return loc;
     }
 
     /**
@@ -1254,15 +1637,21 @@ public final class TravelService {
             String serverId,
             String toPortalId,
             PortalType type,
-            boolean returnCapable
+            boolean returnCapable,
+            byte[] iconPng
     ) {
         static ResolveResult fail(String msg) {
-            return new ResolveResult(false, msg, null, 0, 0, null, null, null, false);
+            return new ResolveResult(false, msg, null, 0, 0, null, null, null, false, null);
         }
 
         static ResolveResult ok(String host, int transferPort, int javaPort, String serverId, String toPortalId,
                                 PortalType type, boolean returnCapable) {
-            return new ResolveResult(true, null, host, transferPort, javaPort, serverId, toPortalId, type, returnCapable);
+            return ok(host, transferPort, javaPort, serverId, toPortalId, type, returnCapable, null);
+        }
+
+        static ResolveResult ok(String host, int transferPort, int javaPort, String serverId, String toPortalId,
+                                PortalType type, boolean returnCapable, byte[] iconPng) {
+            return new ResolveResult(true, null, host, transferPort, javaPort, serverId, toPortalId, type, returnCapable, iconPng);
         }
     }
 }

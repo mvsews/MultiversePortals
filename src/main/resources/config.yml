@@ -20,8 +20,8 @@ server:
   public-port: 0
   # If public-host still looks LAN-only, optionally query api.ipify.org once (privacy: off)
   discover-public-ip: false
-  # Catalog listing: auto | always | never
-  # auto = only when accept-transfers=true AND address is not private/LAN
+  # Catalog listing: auto | always | never  — toggle: /mvp settings map on|off|auto
+  # auto = guests ON + address is not private/LAN
   list-publicly: auto
   # If accept-transfers is off, write accepts-transfers=true once (needs one restart)
   auto-enable-accept-transfers: true
@@ -62,6 +62,8 @@ catalog-share:
   # Presence ping + catalog sync (~15 min). Extra push also fires when a portal is created/bound.
   interval-seconds: 900
   max-entries: 100
+  # Drop from the public map if no presence for this many days (offline nodes stay gray until then)
+  map-retain-days: 30
   # Shared HMAC for /catalog/* (open-network default). Change on private clubs.
   network-secret: "mvp-open-catalog"
   # Hub may allow unsigned catalog/export (public directory of plugin hosts)
@@ -78,10 +80,13 @@ open-network:
   enabled: true
   everyone-can-create: true
   require-trust: false
-  # Default: source reports inventory → destination grants the same items
-  # Toggle: /mvp items export off  |  /mvp items import off
-  default-export-inventory: true
-  default-import-inventory: true
+  # Accept players arriving from other servers (plugin gate; also writes accepts-transfers)
+  # Toggle: /mvp settings guests on|off
+  accept-inbound: true
+  # Default: inventory does NOT travel (enable via /mvp settings export|import on)
+  # Toggle: /mvp settings export|import on|off  (alias: /mvp items …)
+  default-export-inventory: false
+  default-import-inventory: false
 
 # Optional Trust / per-peer policies (or /mvp trust, /mvp policy)
 # peers:

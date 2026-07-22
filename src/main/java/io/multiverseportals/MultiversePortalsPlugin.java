@@ -105,6 +105,16 @@ public final class MultiversePortalsPlugin extends JavaPlugin {
         this.portalService = new PortalService(this, database, registry, pluginConfig);
         this.portalBindService = new PortalBindService(this, database, pluginConfig);
         this.portalEffects = new PortalEffects(this, pluginConfig);
+        // Remove leftover charge-icon ItemDisplays from older builds (dark square bug).
+        getServer().getScheduler().runTask(this, () -> {
+            for (var world : getServer().getWorlds()) {
+                for (var e : world.getEntities()) {
+                    if (e.getScoreboardTags().contains("mvp_charge_icon")) {
+                        e.remove();
+                    }
+                }
+            }
+        });
         this.portalMatter = new PortalMatter(this, pluginConfig);
         this.versionCompat = null;
         this.travelService = new TravelService(this, database, pluginConfig, peerClient, portalService, consentService, ingressPolicy);
@@ -156,6 +166,27 @@ public final class MultiversePortalsPlugin extends JavaPlugin {
         }
         catalogShareService.start();
         updateChecker.start();
+
+        // Immediate central-DB / hub presence — map should see us online within ~1s of enable
+        if (registry.enabled() && pluginConfig.shouldListPublicly()) {
+            String motd0 = net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText()
+                    .serialize(Bukkit.motd());
+            Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+                try {
+                    registry.announceSelf(
+                            Bukkit.getOnlinePlayers().size(),
+                            Bukkit.getMaxPlayers(),
+                            motd0,
+                            Bukkit.getMinecraftVersion(),
+                            0,
+                            false, false, false, 0, 0,
+                            io.multiverseportals.compat.ServerCaps.detect(pluginConfig)
+                    );
+                } catch (Exception e) {
+                    getLogger().warning("Startup registry announce failed: " + e.getMessage());
+                }
+            });
+        }
 
         Bukkit.getScheduler().runTaskLater(this, () -> {
             for (var p : database.listPortals()) {
@@ -209,6 +240,9 @@ public final class MultiversePortalsPlugin extends JavaPlugin {
                                 versionCompat.viaMax(),
                                 io.multiverseportals.compat.ServerCaps.detect(pluginConfig)
                         ));
+            }
+            if (catalogShareService != null && listed) {
+                catalogShareService.pushNowAsync();
             }
         }, 40L);
     }
@@ -349,6 +383,10 @@ public final class MultiversePortalsPlugin extends JavaPlugin {
 
     public boolean acceptTransfersRestartNeeded() {
         return acceptTransfersRestartNeeded && !pluginConfig.acceptTransfersEnabled();
+    }
+
+    public void setAcceptTransfersRestartNeeded(boolean needed) {
+        this.acceptTransfersRestartNeeded = needed;
     }
 
     /** Remind ops that one restart is required after auto-enabling transfers. */

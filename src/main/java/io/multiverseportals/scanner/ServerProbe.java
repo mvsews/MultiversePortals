@@ -132,6 +132,7 @@ public final class ServerProbe {
 
     /**
      * Find Geyser/Bedrock UDP that answers RakNet and parse protocol/version.
+     * Tries ports in order — put sticky / announced ports first.
      */
     public static java.util.Optional<BedrockInfo> findBedrock(String host, List<Integer> ports, int timeoutMs) {
         if (host == null || host.isBlank() || ports == null || ports.isEmpty()) {
@@ -148,6 +149,26 @@ public final class ServerProbe {
             }
         }
         return java.util.Optional.empty();
+    }
+
+    /** Merge preferred Bedrock ports ahead of the scanner default list (no duplicates). */
+    public static List<Integer> mergeBedrockPorts(List<Integer> preferred, List<Integer> fallback) {
+        java.util.LinkedHashSet<Integer> out = new java.util.LinkedHashSet<>();
+        if (preferred != null) {
+            for (Integer p : preferred) {
+                if (p != null && p > 0 && p <= 65535) {
+                    out.add(p);
+                }
+            }
+        }
+        if (fallback != null) {
+            for (Integer p : fallback) {
+                if (p != null && p > 0 && p <= 65535) {
+                    out.add(p);
+                }
+            }
+        }
+        return new java.util.ArrayList<>(out);
     }
 
     /** @deprecated use {@link #findBedrock} */

@@ -586,6 +586,37 @@ public final class Database {
         return out;
     }
 
+    /**
+     * Resolve a club peer by Minecraft public host/port (Java or remembered Bedrock).
+     * Used for travel/offer when the local MySQL registry is disabled.
+     */
+    public Optional<KnownMvpServer> findKnownMvpByHostPort(String host, int port) {
+        if (host == null || host.isBlank()) {
+            return Optional.empty();
+        }
+        String sql = """
+            SELECT * FROM known_mvp_servers
+            WHERE lower(public_host)=lower(?)
+              AND (? <= 0 OR public_port=? OR bedrock_port=?)
+            ORDER BY score DESC, last_seen_at DESC
+            LIMIT 1
+            """;
+        try (Connection c = readConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, host.trim());
+            ps.setInt(2, port);
+            ps.setInt(3, port);
+            ps.setInt(4, port);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return Optional.of(mapKnownMvp(rs));
+                }
+            }
+        } catch (SQLException e) {
+            plugin.getLogger().warning("known_mvp by host failed: " + e.getMessage());
+        }
+        return Optional.empty();
+    }
+
     public List<String> listKnownMvpFederationUrls(int limit) {
         List<String> out = new ArrayList<>();
         String sql = """
@@ -937,6 +968,59 @@ public final class Database {
             }
         } catch (SQLException e) {
             throw new IllegalStateException(e);
+        }
+    }
+
+    /** Consume the newest non-expired PENDING inbound session for this server. */
+    public Optional<TravelSession> takePendingSession(UUID uuid) {
+        String sql = """
+            SELECT * FROM travel_sessions
+            WHERE player_uuid=? AND status='PENDING' AND to_server=?
+            ORDER BY created_at DESC LIMIT 1
+            """;
+        try (Connection c = connection(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, uuid.toString());
+            ps.setString(2, config.serverId());
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) {
+                    return Optional.empty();
+                }
+                TravelSession s = mapSession(rs);
+                if (s.expired()) {
+                    updateSessionStatus(s.sessionId(), TravelSession.Status.EXPIRED);
+                    return Optional.empty();
+                }
+                updateSessionStatus(s.sessionId(), TravelSession.Status.ARRIVED);
+                return Optional.of(s);
+            }
+        } catch (SQLException e) {
+            plugin.getLogger().warning("takePendingSession: " + e.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    public void clearPendingSessions(UUID uuid) {
+        try (Connection c = connection(); PreparedStatement ps = c.prepareStatement(
+                "UPDATE travel_sessions SET status='ARRIVED' WHERE player_uuid=? AND status='PENDING' AND to_server=?")) {
+            ps.setString(1, uuid.toString());
+            ps.setString(2, config.serverId());
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            plugin.getLogger().warning("clearPendingSessions: " + e.getMessage());
+        }
+    }
+
+    public void updateSessionStatus(String sessionId, TravelSession.Status status) {
+        if (sessionId == null || sessionId.isBlank() || status == null) {
+            return;
+        }
+        try (Connection c = connection(); PreparedStatement ps = c.prepareStatement(
+                "UPDATE travel_sessions SET status=? WHERE session_id=?")) {
+            ps.setString(1, status.name());
+            ps.setString(2, sessionId);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            plugin.getLogger().warning("updateSessionStatus: " + e.getMessage());
         }
     }
 

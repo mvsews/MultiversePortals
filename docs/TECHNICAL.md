@@ -55,12 +55,15 @@ Local wool portals, `[Pair]`, and `[To]` by IP keep working in local-only mode.
 |---|---|
 | **Sign portals** | `[Multi]` / `[mvp]` / `[portal]` / `[Random]`, `[To]`, `[Pair]` |
 | **Bind on create** | `[Multi]` sticky until sign break; survives restart |
+| **Dial button** | Button by a random `[Multi]` sign rebinds destination (club peers first) |
+| **Landing** | Cross-server arrivals stand on the return portal plate when known |
+| **Travel claim** | Leaf servers without local federation claim pending landings from the hub over HTTPS |
 | **Local wool portals** | ColorPortals-style ring TP on the same server |
 | **Scanners** | MineScan + Cornbread (+ optional Slowstack) → local SQLite score |
 | **Public catalog** | Auto-join `https://mp.mvse.ws/mvp/v1` (HTTPS) — [REGISTRY.md](REGISTRY.md) |
 | **Catalog share** | Gossip on by default (`catalog-share.enabled`) |
 | **Bedrock** | Geyser UDP + protocol match from RakNet pong |
-| **Inventory** | Export/import across plugin peers (configurable) |
+| **Inventory** | Off by default; enable per server via `/mvp settings export|import` |
 | **Ingress** | Online cap, min-score, denylist, rate limit |
 | **i18n** | `en` / `de` / `ru` / `zh` |
 
@@ -88,17 +91,24 @@ scanner:
 ## Commands
 
 ```text
-/mvp version               # installed vs latest (mp.mvse.ws)
-/mvp ready                 # one-way consent
-/mvp lang en|de|ru|zh
-/mvp update                # download jar to plugins/update/ (admin)
-/mvp scanner               # public pool status
-/mvp ingress | deny | rep  # inbound limits
-/mvp items | settings
-/mvp create | pair | multi
-/mvp local list
 /mvp help
+/mvp version                         # installed vs latest (mp.mvse.ws)
+/mvp ready [off]                     # one-way consent
+/mvp lang en|de|ru|zh                # server fallback language
+/mvp local list | import-colorportals
+/mvp settings                        # map / guests / inventory summary
+/mvp settings map on|off|auto
+/mvp settings guests on|off
+/mvp settings export|import on|off   # inventory transfer (alias: /mvp items …)
+/mvp update                          # download jar to plugins/update/ (admin)
+/mvp scanner                         # public pool status
+/mvp ingress | deny | rep            # inbound limits
+/mvp create | pair | multi | list | delete
+/mvp info | peers | policy | trust
+/mvp registry …                      # hub diagnostics only
 ```
+
+**Player UX (no command):** pressure plate travels; a **button** next to a random `[Multi]` sign turns the dial (rebind).
 
 ---
 
@@ -137,8 +147,9 @@ scanner:
 
 open-network:
   everyone-can-create: true
-  default-export-inventory: true
-  default-import-inventory: true
+  accept-inbound: true               # /mvp settings guests
+  default-export-inventory: false    # /mvp settings export
+  default-import-inventory: false    # /mvp settings import
 
 ready:
   confirm: false            # if true, players need /mvp ready for one-way hops
@@ -201,17 +212,19 @@ JDK **21** + Gradle:
 # → build/libs/MultiversePortals-<version>.jar
 ```
 
-Current release: **1.1.14** · site / jar: [https://mp.mvse.ws/](https://mp.mvse.ws/)
+Current release: **1.1.15** · site / jar: [https://mp.mvse.ws/](https://mp.mvse.ws/)
 
 ---
 
 ## Publish status
 
-| Platform | Status |
-|----------|--------|
-| Hangar / Modrinth / Spigot / BuiltByBit / GitHub Releases | Coming soon |
-
-Until then: build from this repo or take the jar from the hub site.
+| Platform | Link |
+|----------|------|
+| Website | [mp.mvse.ws](https://mp.mvse.ws/) |
+| Hangar | [mvse/MultiversePortals](https://hangar.papermc.io/mvse/MultiversePortals) |
+| Modrinth | [multiverseportals](https://modrinth.com/project/multiverseportals) |
+| CurseForge | [multiverse-portals-mvse](https://www.curseforge.com/minecraft/bukkit-plugins/multiverse-portals-mvse) |
+| GitHub Releases | [Releases](https://github.com/mvsews/MultiversePortals/releases) |
 
 ---
 

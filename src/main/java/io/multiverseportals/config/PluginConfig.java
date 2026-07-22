@@ -234,14 +234,44 @@ public final class PluginConfig {
 
     /**
      * Public catalog listing: {@code auto} (default) | {@code always} | {@code never}.
-     * Auto = accept-transfers + non-private host.
+     * Auto = guests allowed + non-private host.
      */
     public String listPubliclyMode() {
         return plugin.getConfig().getString("server.list-publicly", "auto");
     }
 
+    public void setListPubliclyMode(String mode) {
+        String m = mode == null ? "auto" : mode.trim().toLowerCase(java.util.Locale.ROOT);
+        if (!m.equals("auto") && !m.equals("always") && !m.equals("never")) {
+            throw new IllegalArgumentException("list-publicly must be auto|always|never");
+        }
+        plugin.getConfig().set("server.list-publicly", m);
+        plugin.saveConfig();
+        reload();
+    }
+
     public boolean acceptTransfersEnabled() {
         return io.multiverseportals.util.PublicEndpoint.acceptTransfersEnabled();
+    }
+
+    /**
+     * Admin gate: accept players arriving from other servers.
+     * Immediate for MVP travel; Paper Transfer also needs {@code accepts-transfers} (restart).
+     */
+    public boolean acceptInbound() {
+        return plugin.getConfig().getBoolean("open-network.accept-inbound", true);
+    }
+
+    public void setAcceptInbound(boolean value) {
+        plugin.getConfig().set("open-network.accept-inbound", value);
+        plugin.saveConfig();
+        reload();
+    }
+
+    /** Willing + able (or pending restart) to receive guests for catalog / auto listing. */
+    public boolean guestsOpen() {
+        return acceptInbound() && (acceptTransfersEnabled()
+                || io.multiverseportals.util.PublicEndpoint.isAcceptTransfersTrueInFile());
     }
 
     /** First run: write accepts-transfers=true into server.properties if off. */
@@ -252,7 +282,7 @@ public final class PluginConfig {
     /** Whether this node should announce itself to the public hub catalog. */
     public boolean shouldListPublicly() {
         return io.multiverseportals.util.PublicEndpoint.shouldListPublicly(
-                listPubliclyMode(), publicHost(), acceptTransfersEnabled());
+                listPubliclyMode(), publicHost(), guestsOpen());
     }
 
     public boolean isLocalOnlyMode() {
@@ -365,6 +395,15 @@ public final class PluginConfig {
         return Math.max(1, plugin.getConfig().getInt("catalog-share.max-entries", 100));
     }
 
+    /** How long an absent MVP server stays on the public map (days). After that it disappears. */
+    public int catalogMapRetainDays() {
+        return Math.max(1, plugin.getConfig().getInt("catalog-share.map-retain-days", 30));
+    }
+
+    public long catalogMapRetainMs() {
+        return catalogMapRetainDays() * 24L * 60L * 60L * 1000L;
+    }
+
     public String catalogShareNetworkSecret() {
         String v = plugin.getConfig().getString("catalog-share.network-secret", "mvp-open-catalog");
         return v == null || v.isBlank() ? "mvp-open-catalog" : v;
@@ -419,11 +458,11 @@ public final class PluginConfig {
     }
 
     public boolean defaultExportInventory() {
-        return plugin.getConfig().getBoolean("open-network.default-export-inventory", true);
+        return plugin.getConfig().getBoolean("open-network.default-export-inventory", false);
     }
 
     public boolean defaultImportInventory() {
-        return plugin.getConfig().getBoolean("open-network.default-import-inventory", true);
+        return plugin.getConfig().getBoolean("open-network.default-import-inventory", false);
     }
 
     public void setDefaultExportInventory(boolean value) {

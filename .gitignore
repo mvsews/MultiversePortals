@@ -21,6 +21,7 @@ PROMO.md
 docs/SCANNERS.md
 probe_*.py
 check_*.py
+check_*.sh
 check-*.sh
 deploy-*.sh
 fix_spawn_portal.py

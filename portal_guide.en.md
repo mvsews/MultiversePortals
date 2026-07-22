@@ -70,8 +70,10 @@ English: [README.md](README.md#link-two-of-your-servers-round-trip) · Русс�
 
 1. Place `[Multi]` → white particles → the portal **binds to one server**.
 2. While the sign stays up, it always goes there (including after a restart).
-3. Want another destination — **break the sign** and place `[Multi]` again.
-4. If the target is temporarily down, the link **does not change**; try later or rebuild the sign.
+3. Want another destination — put a **button by the sign** and press it: that’s the **door dial**, like in *Howl’s Moving Castle* — it switches where the portal leads (club MVP peers first, otherwise a new random).
+4. Or **break the sign** and place `[Multi]` again.
+5. The dial does **not** work on `[To]` (fixed address) or `[Pair]`.
+6. If the target is temporarily down, the link **does not change**; try later, turn the dial, or rebuild the sign.
 
 ### How to travel
 
@@ -153,7 +155,7 @@ Lightest mode: **PAIR** only or **local wool** only. Full table: [docs/TECHNICAL
 
 ## Items
 
-- To a server **with the plugin** (pair / network) — items may travel with you (depends on `/mvp items`).
+- Inventory transfer is **off by default**. Admins enable with `/mvp settings export on` / `import on` (alias `/mvp items …`).
 - On a **public one-way** hop — items **stay in your inventory** (they are not stripped).
 
 ## Versions
@@ -162,7 +164,7 @@ In-game: **`/mvp version`** — installed vs latest on mp.mvse.ws.
 
 The plugin will not send you to a server your client cannot join. If there are no targets — “no compatible servers”.
 
-Download the jar from [mp.mvse.ws](https://mp.mvse.ws/) — the filename includes the version (`MultiversePortals-1.1.14.jar`).
+Download the jar from [mp.mvse.ws](https://mp.mvse.ws/) — the filename includes the version (`MultiversePortals-1.1.15.jar`).
 
 ## Admin: `accept-transfers` and the catalog
 
@@ -196,6 +198,8 @@ Transfer address comes from `server-ip` / `server-port` automatically. Set `publ
 /mvp help           — help
 /mvp scanner        — pool size (info)
 ```
+
+Admin toggles: `/mvp settings` (map / guests / inventory).
 
 Full admin docs: [README.md](README.md) · [README.ru.md](README.ru.md) · [README.zh.md](README.zh.md).
 

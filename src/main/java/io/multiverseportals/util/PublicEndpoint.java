@@ -187,7 +187,7 @@ public final class PublicEndpoint {
         }
     }
 
-    private static boolean isAcceptTransfersTrueInFile() {
+    public static boolean isAcceptTransfersTrueInFile() {
         String v = readServerProperty("accepts-transfers");
         if (v == null || v.isBlank()) {
             v = readServerProperty("accept-transfers");
@@ -195,17 +195,22 @@ public final class PublicEndpoint {
         return v != null && Boolean.parseBoolean(v.trim());
     }
 
+    static boolean writeAcceptTransfersTrue() throws Exception {
+        return writeAcceptTransfers(true);
+    }
+
     /**
      * Prefer Paper key {@code accepts-transfers}; migrate legacy {@code accept-transfers}.
-     * Preserves other lines / comments.
+     * Preserves other lines / comments. Takes effect after a full server restart.
      */
-    static boolean writeAcceptTransfersTrue() throws Exception {
+    public static boolean writeAcceptTransfers(boolean enabled) throws Exception {
         Path props = Path.of("server.properties");
         if (!Files.isRegularFile(props)) {
             return false;
         }
         java.util.List<String> lines = Files.readAllLines(props, StandardCharsets.UTF_8);
         boolean sawAccepts = false;
+        String value = enabled ? "true" : "false";
         for (int i = 0; i < lines.size(); i++) {
             String line = lines.get(i);
             String trimmed = line.trim();
@@ -215,7 +220,7 @@ public final class PublicEndpoint {
             int eq = trimmed.indexOf('=');
             String key = trimmed.substring(0, eq).trim();
             if ("accepts-transfers".equalsIgnoreCase(key) || "accept-transfers".equalsIgnoreCase(key)) {
-                lines.set(i, "accepts-transfers=true");
+                lines.set(i, "accepts-transfers=" + value);
                 sawAccepts = true;
             }
         }
@@ -223,7 +228,7 @@ public final class PublicEndpoint {
             if (!lines.isEmpty() && !lines.get(lines.size() - 1).isBlank()) {
                 lines.add("");
             }
-            lines.add("accepts-transfers=true");
+            lines.add("accepts-transfers=" + value);
         }
         Path tmp = props.resolveSibling("server.properties.mvp-tmp");
         Files.write(tmp, lines, StandardCharsets.UTF_8);

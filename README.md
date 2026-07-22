@@ -9,7 +9,11 @@
 </p>
 
 <p align="center">
-  <a href="https://mp.mvse.ws/"><strong>Website &amp; jar → mp.mvse.ws</strong></a>
+  <a href="https://mp.mvse.ws/"><strong>Website &amp; jar → mp.mvse.ws</strong></a><br>
+  <a href="https://hangar.papermc.io/mvse/MultiversePortals">Hangar</a> ·
+  <a href="https://modrinth.com/project/multiverseportals">Modrinth</a> ·
+  <a href="https://www.curseforge.com/minecraft/bukkit-plugins/multiverse-portals-mvse">CurseForge</a> ·
+  <a href="https://github.com/mvsews/MultiversePortals/releases">GitHub</a>
 </p>
 
 <p align="center">
@@ -71,6 +75,8 @@ First line of the sign = type. Put a **pressure plate** next to it.
 | `[To]` + IP / port (or `server-id`) | Always goes to that destination |
 | `[Pair]` | Creates a code — use the same code on the other server for a round-trip |
 
+**Dial:** a button next to a random `[Multi]` sign rebinds the sticky destination (club MVP peers first). Does not apply to `[To]` / `[Pair]`.
+
 Sign status while working: `Portal` → `Scan...` → short destination name + `->` (one-way) or `<->` (pair).
 
 For public one-way hops, players run **`/mvp ready`** once.
@@ -128,10 +134,13 @@ Wool frame + wall sign (ColorPortals-style):
 |---------|-----|
 | `/mvp version` | Installed vs latest on mp.mvse.ws |
 | `/mvp ready` | Allow public one-way travel |
-| `/mvp lang …` | Switch UI language |
+| `/mvp lang …` | Server fallback language |
+| `/mvp settings` | Map listing, guests, inventory transfer |
 | `/mvp help` | In-game help |
 | `/mvp update` | Download update jar (admin) |
 | `/mvp scanner` | Public pool status (admin) |
+
+**Inventory:** off by default on the open network. Enable with `/mvp settings export on` / `import on` (or `/mvp items …`).
 
 ---
 

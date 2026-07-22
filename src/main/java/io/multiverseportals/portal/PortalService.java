@@ -47,7 +47,8 @@ public final class PortalService {
         heartbeatTask = Bukkit.getScheduler().runTaskTimerAsynchronously(plugin, this::heartbeatTick, period, period);
         if (registry.enabled()) {
             long regPeriod = config.registryHeartbeatSeconds() * 20L;
-            registryTask = Bukkit.getScheduler().runTaskTimerAsynchronously(plugin, this::registryAnnounce, 40L, regPeriod);
+            // First central-DB heartbeat almost immediately; then on the normal interval
+            registryTask = Bukkit.getScheduler().runTaskTimerAsynchronously(plugin, this::registryAnnounce, 20L, regPeriod);
         }
         // Particles inside portal matter + keep displays present
         Bukkit.getScheduler().runTaskTimer(plugin, this::matterTick, 40L, 10L);

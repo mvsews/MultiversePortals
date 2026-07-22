@@ -2,8 +2,10 @@ package io.multiverseportals.compat;
 
 import io.multiverseportals.config.PluginConfig;
 import org.bukkit.Bukkit;
+import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.plugin.Plugin;
 
+import java.io.File;
 import java.util.List;
 
 /**
@@ -84,8 +86,7 @@ public final class ServerCaps {
         String geyserVer = hasGeyser ? safeVersion(geyser) : "";
         int bedPort = 0;
         if (hasGeyser) {
-            List<Integer> ports = config.scannerBedrockPorts();
-            bedPort = (ports != null && !ports.isEmpty()) ? ports.get(0) : 19132;
+            bedPort = readGeyserListenPort(geyser, config);
         }
         int bedProto = hasGeyser ? detectBedrockProtocol() : 0;
         String bedVer = hasGeyser ? detectBedrockVersion() : "";
@@ -111,6 +112,39 @@ public final class ServerCaps {
 
     private static Plugin plugin(String name) {
         return Bukkit.getPluginManager().getPlugin(name);
+    }
+
+    /**
+     * Real Geyser UDP listen / broadcast port from its config.yml (not scanner default list).
+     * Prefer {@code bedrock.broadcast-port} when set — that's what Bedrock clients must use.
+     */
+    private static int readGeyserListenPort(Plugin geyser, PluginConfig config) {
+        try {
+            File cfg = new File(geyser.getDataFolder(), "config.yml");
+            if (cfg.isFile()) {
+                YamlConfiguration yml = YamlConfiguration.loadConfiguration(cfg);
+                int broadcast = yml.getInt("bedrock.broadcast-port", 0);
+                if (broadcast > 0 && broadcast <= 65535) {
+                    return broadcast;
+                }
+                if (yml.getBoolean("bedrock.clone-remote-port", false)) {
+                    int javaPort = Bukkit.getPort();
+                    if (javaPort > 0) {
+                        return javaPort;
+                    }
+                }
+                int port = yml.getInt("bedrock.port", 0);
+                if (port > 0 && port <= 65535) {
+                    return port;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        List<Integer> ports = config != null ? config.scannerBedrockPorts() : List.of();
+        if (ports != null && !ports.isEmpty() && ports.get(0) != null && ports.get(0) > 0) {
+            return ports.get(0);
+        }
+        return 19132;
     }
 
     private static String safeVersion(Plugin p) {

@@ -3,11 +3,14 @@ package io.multiverseportals.listener;
 import io.multiverseportals.MultiversePortalsPlugin;
 import io.multiverseportals.local.LocalPortalListener;
 import io.multiverseportals.model.Portal;
+import io.multiverseportals.model.PortalType;
+import io.multiverseportals.portal.PortalBindService;
 import io.multiverseportals.portal.PortalEffects;
 import io.multiverseportals.portal.PortalService;
 import io.multiverseportals.travel.TravelService;
 import io.multiverseportals.util.ShapeHasher;
 import org.bukkit.Location;
+import org.bukkit.Tag;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.entity.Player;
@@ -75,6 +78,50 @@ public final class PortalListener implements Listener {
             return; // handled by LocalPortalListener
         }
         tryActivate(event.getPlayer(), block.getLocation(), "physical");
+    }
+
+    /**
+     * Howl's dial: button by a random [Multi] sign switches the sticky destination.
+     * Local wool portals keep their own button → teleport behaviour.
+     */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onDialButton(PlayerInteractEvent event) {
+        if (event.getAction() != Action.RIGHT_CLICK_BLOCK) {
+            return;
+        }
+        if (event.getHand() != null && event.getHand() != EquipmentSlot.HAND) {
+            return;
+        }
+        Block block = event.getClickedBlock();
+        if (block == null || !Tag.BUTTONS.isTagged(block.getType())) {
+            return;
+        }
+        // Network MULTI only — local wool portals are not in portalService.findNear().
+        Optional<Portal> found = findPortalForDialButton(block);
+        if (found.isEmpty()) {
+            return;
+        }
+        Portal portal = found.get();
+        if (portal.type() != PortalType.MULTI) {
+            return;
+        }
+        PortalBindService binds = plugin.portalBindService();
+        if (binds == null) {
+            return;
+        }
+        plugin.getLogger().info("Portal dial button by " + event.getPlayer().getName()
+                + " → " + portal.id());
+        binds.cycleBind(event.getPlayer(), portal);
+    }
+
+    private Optional<Portal> findPortalForDialButton(Block button) {
+        // Prefer button under the network sign (sign = frame anchor)
+        Block above = button.getRelative(BlockFace.UP);
+        Optional<Portal> bySign = portalService.findNear(above.getLocation());
+        if (bySign.isPresent()) {
+            return bySign;
+        }
+        return portalService.findNear(button.getLocation());
     }
 
     /**

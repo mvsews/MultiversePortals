@@ -8,6 +8,7 @@ import io.multiverseportals.db.RegistryDatabase;
 import io.multiverseportals.federation.PeerClient;
 import io.multiverseportals.model.*;
 import io.multiverseportals.portal.PortalService;
+import io.multiverseportals.util.PublicEndpoint;
 import io.multiverseportals.util.ShapeHasher;
 import org.bukkit.Bukkit;
 import net.kyori.adventure.text.minimessage.MiniMessage;
@@ -113,8 +114,9 @@ public final class MvpCommand implements CommandExecutor, TabCompleter {
             case "delete" -> delete(sender, args);
             case "score" -> score(sender, args);
             case "registry" -> registryCmd(sender, args);
+            case "bindpreview", "bindorder" -> bindPreviewCmd(sender, args);
             case "items" -> itemsCmd(sender, args);
-            case "settings" -> settings(sender);
+            case "settings" -> settingsCmd(sender, args);
             case "ready" -> readyCmd(sender, args);
             case "scanner" -> scannerCmd(sender, args);
             case "ingress" -> ingressCmd(sender, args);
@@ -402,40 +404,64 @@ public final class MvpCommand implements CommandExecutor, TabCompleter {
         if (args.length == 1) {
             msg(sender, "<gray>export (уносить отсюда):</gray> " + onOff(config.defaultExportInventory()));
             msg(sender, "<gray>import (принимать чужие):</gray> " + onOff(config.defaultImportInventory()));
-            msg(sender, "<yellow>/mvp items export on|off</yellow>");
-            msg(sender, "<yellow>/mvp items import on|off</yellow>");
+            msg(sender, "<yellow>/mvp settings export|import on|off</yellow>");
             msg(sender, "<gray>На пира:</gray> <yellow>/mvp policy &lt;id&gt; exportInv|importInv true|false</yellow>");
             return;
         }
         if (args.length < 3) {
-            msg(sender, "<yellow>/mvp items export|import on|off</yellow>");
+            msg(sender, "<yellow>/mvp settings export|import on|off</yellow>");
             return;
         }
-        boolean value = args[2].equalsIgnoreCase("on") || args[2].equalsIgnoreCase("true") || args[2].equals("1");
+        boolean value = parseOnOff(args[2]);
         switch (args[1].toLowerCase(Locale.ROOT)) {
-            case "export" -> {
-                config.setDefaultExportInventory(value);
-                msg(sender, "<green>export-inventory = </green>" + onOff(value)
-                        + " <gray>(уходящим сообщаем вещи)</gray>");
-            }
-            case "import" -> {
-                config.setDefaultImportInventory(value);
-                msg(sender, "<green>import-inventory = </green>" + onOff(value)
-                        + " <gray>(входящим выдаём чужие вещи)</gray>");
-            }
-            default -> msg(sender, "<yellow>/mvp items export|import on|off</yellow>");
+            case "export" -> setExport(sender, value);
+            case "import" -> setImport(sender, value);
+            default -> msg(sender, "<yellow>/mvp settings export|import on|off</yellow>");
         }
     }
 
-    private void settings(CommandSender sender) {
+    private void settingsCmd(CommandSender sender, String[] args) {
+        if (args.length == 1) {
+            settingsStatus(sender);
+            if (sender.hasPermission("multiverseportals.admin")) {
+                msg(sender, "<yellow>/mvp settings map on|off|auto</yellow>");
+                msg(sender, "<yellow>/mvp settings guests on|off</yellow>");
+                msg(sender, "<yellow>/mvp settings export on|off</yellow>");
+                msg(sender, "<yellow>/mvp settings import on|off</yellow>");
+            }
+            return;
+        }
+        if (!sender.hasPermission("multiverseportals.admin")) {
+            msg(sender, config.message(sender, "no-permission-travel"));
+            return;
+        }
+        String key = args[1].toLowerCase(Locale.ROOT);
+        if (args.length < 3 && !key.equals("status")) {
+            msg(sender, "<yellow>/mvp settings map|guests|export|import on|off</yellow>");
+            return;
+        }
+        switch (key) {
+            case "map", "catalog", "list", "public" -> setMap(sender, args[2]);
+            case "guests", "guest", "accept", "inbound", "transfers" -> setGuests(sender, parseOnOff(args[2]));
+            case "export" -> setExport(sender, parseOnOff(args[2]));
+            case "import" -> setImport(sender, parseOnOff(args[2]));
+            case "status" -> settingsStatus(sender);
+            default -> msg(sender, "<yellow>/mvp settings map|guests|export|import on|off</yellow>");
+        }
+    }
+
+    private void settingsStatus(CommandSender sender) {
         msg(sender, "<aqua>" + config.serverId() + "</aqua> <white>"
                 + config.publicHost() + ":" + config.publicPort() + "</white>");
-        msg(sender, "<gray>accept-transfers:</gray> " + onOff(config.acceptTransfersEnabled())
-                + "  <gray>catalog:</gray> "
-                + (config.shouldListPublicly() ? "<green>public</green>" : "<yellow>local-only</yellow>")
+        msg(sender, "<gray>map:</gray> "
+                + (config.shouldListPublicly() ? "<green>ON</green>" : "<red>OFF</red>")
                 + " <dark_gray>(" + config.listPubliclyMode() + ")</dark_gray>");
-        msg(sender, "<gray>items export:</gray> " + onOff(config.defaultExportInventory())
-                + "  <gray>import:</gray> " + onOff(config.defaultImportInventory()));
+        msg(sender, "<gray>guests:</gray> " + onOff(config.acceptInbound())
+                + "  <gray>Paper Transfer:</gray> " + onOff(config.acceptTransfersEnabled())
+                + (plugin.acceptTransfersRestartNeeded()
+                ? " <yellow>(restart needed)</yellow>" : ""));
+        msg(sender, "<gray>export inventory:</gray> " + onOff(config.defaultExportInventory())
+                + "  <gray>import inventory:</gray> " + onOff(config.defaultImportInventory()));
         msg(sender, "<gray>require-trust:</gray> " + onOff(config.requireTrust())
                 + "  <gray>create:</gray> " + onOff(config.everyoneCanCreate()));
         var overrides = config.peerOverrides();
@@ -444,6 +470,84 @@ public final class MvpCommand implements CommandExecutor, TabCompleter {
             overrides.forEach((id, p) -> msg(sender, "  <aqua>" + id + "</aqua> travel=" + p.allowTravel()
                     + " exp=" + p.exportInventory() + " imp=" + p.importInventory()));
         }
+    }
+
+    private void setMap(CommandSender sender, String raw) {
+        String v = raw.trim().toLowerCase(Locale.ROOT);
+        String mode;
+        if (v.equals("on") || v.equals("true") || v.equals("1") || v.equals("yes")) {
+            mode = "auto";
+        } else if (v.equals("off") || v.equals("false") || v.equals("0") || v.equals("no") || v.equals("never")) {
+            mode = "never";
+        } else if (v.equals("auto") || v.equals("always")) {
+            mode = v;
+        } else {
+            msg(sender, "<yellow>/mvp settings map on|off|auto|always</yellow>");
+            return;
+        }
+        boolean wasListed = config.shouldListPublicly();
+        config.setListPubliclyMode(mode);
+        boolean nowListed = config.shouldListPublicly();
+        msg(sender, config.message(sender, "settings-map")
+                .replace("%state%", nowListed ? "ON" : "OFF")
+                .replace("%mode%", mode));
+        if (plugin.catalogShareService() != null) {
+            if (nowListed) {
+                plugin.catalogShareService().pushNowAsync();
+            } else if (wasListed || mode.equals("never")) {
+                plugin.catalogShareService().notifyOfflineAsync();
+            }
+        }
+    }
+
+    private void setGuests(CommandSender sender, boolean value) {
+        config.setAcceptInbound(value);
+        try {
+            PublicEndpoint.writeAcceptTransfers(value);
+        } catch (Exception e) {
+            msg(sender, "<red>Could not write server.properties: </red>" + e.getMessage());
+        }
+        if (value) {
+            boolean runtime = config.acceptTransfersEnabled();
+            plugin.setAcceptTransfersRestartNeeded(!runtime);
+            msg(sender, config.message(sender, "settings-guests-on"));
+            if (!runtime) {
+                msg(sender, config.message(sender, "accept-transfers-restart"));
+            }
+            if (plugin.catalogShareService() != null && config.shouldListPublicly()) {
+                plugin.catalogShareService().pushNowAsync();
+            }
+        } else {
+            plugin.setAcceptTransfersRestartNeeded(false);
+            msg(sender, config.message(sender, "settings-guests-off"));
+            if (plugin.catalogShareService() != null) {
+                plugin.catalogShareService().notifyOfflineAsync();
+                if (config.shouldListPublicly()) {
+                    plugin.catalogShareService().pushNowAsync();
+                }
+            }
+        }
+    }
+
+    private void setExport(CommandSender sender, boolean value) {
+        config.setDefaultExportInventory(value);
+        msg(sender, config.message(sender, "settings-export").replace("%state%", value ? "ON" : "OFF"));
+        if (plugin.catalogShareService() != null && config.shouldListPublicly()) {
+            plugin.catalogShareService().pushNowAsync();
+        }
+    }
+
+    private void setImport(CommandSender sender, boolean value) {
+        config.setDefaultImportInventory(value);
+        msg(sender, config.message(sender, "settings-import").replace("%state%", value ? "ON" : "OFF"));
+        if (plugin.catalogShareService() != null && config.shouldListPublicly()) {
+            plugin.catalogShareService().pushNowAsync();
+        }
+    }
+
+    private static boolean parseOnOff(String raw) {
+        String v = raw == null ? "" : raw.trim().toLowerCase(Locale.ROOT);
+        return v.equals("on") || v.equals("true") || v.equals("1") || v.equals("yes");
     }
 
     private static String onOff(boolean v) {
@@ -645,6 +749,68 @@ public final class MvpCommand implements CommandExecutor, TabCompleter {
             msg(sender, "<aqua>" + p.type() + "</aqua> <white>" + p.name() + "</white> <gray>" + p.id().substring(0, 8)
                     + "</gray> " + p.status() + " @ " + p.frame().key());
         }
+    }
+
+    private void bindPreviewCmd(CommandSender sender, String[] args) {
+        if (!sender.hasPermission("multiverseportals.admin")) {
+            return;
+        }
+        var bind = plugin.portalBindService();
+        if (bind == null) {
+            msg(sender, "<red>Bind service unavailable.</red>");
+            return;
+        }
+        boolean bedrock = false;
+        String portalId = null;
+        int limit = 25;
+        for (int i = 1; i < args.length; i++) {
+            String a = args[i];
+            if (a.equalsIgnoreCase("bedrock") || a.equalsIgnoreCase("bed")) {
+                bedrock = true;
+            } else if (a.startsWith("limit=")) {
+                try {
+                    limit = Integer.parseInt(a.substring(6));
+                } catch (NumberFormatException ignored) {
+                }
+            } else if (!a.contains("=")) {
+                portalId = a;
+            }
+        }
+        limit = Math.max(1, Math.min(80, limit));
+        boolean finalBedrock = bedrock;
+        String finalPortalId = portalId;
+        int finalLimit = limit;
+        msg(sender, "<gray>Building bind order…</gray>");
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            var json = bind.previewBindOrder(finalBedrock, null, finalPortalId, finalLimit, false);
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                msg(sender, "<aqua>Bind preview</aqua> pool=<white>" + json.get("poolSize").getAsInt()
+                        + "</white> club=<white>" + json.get("clubSize").getAsInt()
+                        + "</white> needBedrock=<white>" + json.get("needBedrock").getAsBoolean()
+                        + "</white> requireGeyser=<white>" + json.get("requireGeyser").getAsBoolean()
+                        + "</white>");
+                var arr = json.getAsJsonArray("candidates");
+                int shown = 0;
+                for (var el : arr) {
+                    var o = el.getAsJsonObject();
+                    if (!o.get("wouldProbe").getAsBoolean() && shown >= 12) {
+                        continue;
+                    }
+                    shown++;
+                    String skip = o.has("skip") ? " <red>skip=" + o.get("skip").getAsString() + "</red>" : "";
+                    String club = o.get("hasPlugin").getAsBoolean() ? "<green>club</green>" : "<gray>ext</gray>";
+                    msg(sender, "<gray>#" + o.get("rank").getAsInt() + "</gray> "
+                            + club + " <white>" + o.get("host").getAsString() + ":" + o.get("javaPort").getAsInt()
+                            + "</white> <dark_gray>" + o.get("tier").getAsString() + "</dark_gray>"
+                            + (o.get("wouldProbe").getAsBoolean() ? " <yellow>probe</yellow>" : skip));
+                    if (shown >= 25) {
+                        break;
+                    }
+                }
+                msg(sender, "<gray>API:</gray> <white>GET "
+                        + config.federationPath() + "/bind/preview?bedrock=0&limit=40</white>");
+            });
+        });
     }
 
     private void delete(CommandSender sender, String[] args) {
@@ -936,10 +1102,11 @@ public final class MvpCommand implements CommandExecutor, TabCompleter {
         msg(sender, "<white>/mvp ready</white> <gray>one-way consent</gray>");
         msg(sender, "<white>/mvp lang en|de|ru|zh</white> <gray>— server fallback language</gray>");
         msg(sender, "<white>/mvp scanner</white> <gray>public server pool</gray>");
+        msg(sender, "<white>/mvp bindpreview</white> <gray>порядок кандидатов [Multi]</gray>");
         msg(sender, "<white>/mvp ingress</white> <gray>inbound limits</gray>");
         msg(sender, "<white>/mvp items</white> <gray>inventory export/import</gray>");
+        msg(sender, "<white>/mvp settings</white> <gray>map / guests / inventory toggles</gray>");
         msg(sender, "<white>/mvp update</white> <gray>скачать обновление (admin)</gray>");
-        msg(sender, "<white>/mvp settings</white>");
     }
 
     private java.util.Map<String, java.util.List<String>> collectCommentSignsForCmd() {
@@ -962,7 +1129,7 @@ public final class MvpCommand implements CommandExecutor, TabCompleter {
         if (args.length == 1) {
             return filter(args[0], "help", "status", "stats", "info", "version", "reload", "update", "settings", "items", "ready", "scanner",
                     "ingress", "deny", "rep", "lang", "trust", "peers", "policy", "create", "pair", "multi",
-                    "list", "delete", "score", "registry", "local");
+                    "list", "delete", "score", "registry", "bindpreview", "bindorder", "local");
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("local")) {
             return filter(args[1], "list", "import-colorportals");
@@ -995,6 +1162,16 @@ public final class MvpCommand implements CommandExecutor, TabCompleter {
             return filter(args[1], "export", "import");
         }
         if (args.length == 3 && args[0].equalsIgnoreCase("items")) {
+            return filter(args[2], "on", "off");
+        }
+        if (args.length == 2 && args[0].equalsIgnoreCase("settings")) {
+            return filter(args[1], "map", "guests", "export", "import", "status");
+        }
+        if (args.length == 3 && args[0].equalsIgnoreCase("settings")) {
+            String k = args[1].toLowerCase(Locale.ROOT);
+            if (k.equals("map") || k.equals("catalog") || k.equals("list") || k.equals("public")) {
+                return filter(args[2], "on", "off", "auto", "always");
+            }
             return filter(args[2], "on", "off");
         }
         return List.of();

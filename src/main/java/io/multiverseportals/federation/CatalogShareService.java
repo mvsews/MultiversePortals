@@ -12,6 +12,7 @@ import org.bukkit.Bukkit;
 import org.bukkit.scheduler.BukkitTask;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -51,9 +52,11 @@ public final class CatalogShareService {
         }
         int sec = config.catalogShareIntervalSeconds();
         long period = 20L * sec;
-        task = Bukkit.getScheduler().runTaskTimerAsynchronously(plugin, this::tickSafe, 20L * 15L, period);
+        task = Bukkit.getScheduler().runTaskTimerAsynchronously(plugin, this::tickSafe, 20L * 2L, period);
         plugin.getLogger().info("Catalog share on (interval=" + sec + "s, hub=" + config.catalogShareHub()
                 + ", pull=" + config.catalogSharePull() + ", push=" + config.catalogSharePush() + ")");
+        // Presence pings ASAP + retries (hub may still be restarting → 502)
+        scheduleStartupAnnounce(0);
     }
 
     public void stop() {
@@ -89,19 +92,33 @@ public final class CatalogShareService {
     /** Snapshot for HTTP /catalog/export (hub prefers fresh registry rows). */
     public JsonObject buildExportPayload() {
         int max = config.catalogShareMaxEntries();
+        long retainMs = config.catalogMapRetainMs();
+        long now = System.currentTimeMillis();
+        long retainCutoff = now - retainMs;
         JsonArray servers = new JsonArray();
         Set<String> seen = new LinkedHashSet<>();
+        Set<String> retainedIds = new LinkedHashSet<>();
 
         if (config.catalogShareHub() && registry != null && registry.enabled()) {
-            // Wider window for hub directory than travel stale filter
-            long hubAge = Math.max(config.registryStaleMs(), 600_000L);
+            // Keep offline servers on the map for map-retain-days (default 30d), then drop them
+            long hubAge = Math.max(retainMs, config.registryStaleMs());
             for (RegistryServer rs : registry.listAll(hubAge)) {
                 if (!rs.hasPlugin() || !rs.multiOptIn()) {
+                    continue;
+                }
+                long lastSeen = Math.max(rs.lastHeartbeat(), rs.lastOnlineAt());
+                if (lastSeen > 0 && lastSeen < retainCutoff) {
                     continue;
                 }
                 if (!seen.add(rs.serverId().toLowerCase(Locale.ROOT))) {
                     continue;
                 }
+                retainedIds.add(rs.serverId().toLowerCase(Locale.ROOT));
+                boolean serverOnline = rs.lastOfflineAt() <= 0
+                        || (rs.lastOnlineAt() > 0 && rs.lastOfflineAt() < rs.lastOnlineAt());
+                int onlinePlayers = serverOnline && rs.onlinePlayers() != null
+                        ? Math.max(0, rs.onlinePlayers()) : 0;
+                int maxPlayers = rs.maxPlayers() != null ? Math.max(0, rs.maxPlayers()) : 0;
                 servers.add(toJson(
                         rs.serverId(),
                         publicLabel(rs.displayName(), rs.motd(), rs.serverId()),
@@ -119,7 +136,9 @@ public final class CatalogShareService {
                         rs.hasIcon(),
                         rs.registeredAt(),
                         rs.lastOnlineAt(),
-                        rs.lastOfflineAt()
+                        rs.lastOfflineAt(),
+                        onlinePlayers,
+                        maxPlayers
                 ));
                 if (servers.size() >= max) {
                     break;
@@ -129,9 +148,13 @@ public final class CatalogShareService {
 
         if (servers.size() < max) {
             for (Database.KnownMvpServer k : db.listKnownMvp(max)) {
+                if (k.lastSeenAt() > 0 && k.lastSeenAt() < retainCutoff) {
+                    continue;
+                }
                 if (!seen.add(k.serverId().toLowerCase(Locale.ROOT))) {
                     continue;
                 }
+                retainedIds.add(k.serverId().toLowerCase(Locale.ROOT));
                 servers.add(toJson(
                         k.serverId(),
                         publicLabel(k.displayName(), null, k.serverId()),
@@ -149,7 +172,9 @@ public final class CatalogShareService {
                         false,
                         0L,
                         k.lastSeenAt(),
-                        0L
+                        0L,
+                        0,
+                        0
                 ));
                 if (servers.size() >= max) {
                     break;
@@ -159,18 +184,84 @@ public final class CatalogShareService {
 
         if (config.shouldListPublicly()) {
             enrichSelfBranding(servers);
+            retainedIds.add(config.serverId().toLowerCase(Locale.ROOT));
         } else {
             // Local-only: never embed ourselves in catalog snapshots we push/export
             removeSelf(servers);
         }
+        JsonArray portals = config.shouldListPublicly()
+                ? buildPortalsArray(retainedIds)
+                : new JsonArray();
         JsonObject out = new JsonObject();
         out.addProperty("ok", true);
         out.addProperty("serverId", config.serverId());
         out.addProperty("hub", config.catalogShareHub());
         out.addProperty("listPublicly", config.shouldListPublicly());
+        out.addProperty("mapRetainDays", config.catalogMapRetainDays());
         out.add("servers", servers);
-        out.add("portals", config.shouldListPublicly() ? buildPortalsArray() : new JsonArray());
+        out.add("portals", portals);
+        out.add("players", computePlayerTotals(servers, portals));
         return out;
+    }
+
+    /**
+     * mvp = players on MultiversePortals peers; network = unique hosts including portal destinations.
+     */
+    private JsonObject computePlayerTotals(JsonArray servers, JsonArray portals) {
+        Map<String, Integer> byHost = new LinkedHashMap<>();
+        int mvp = 0;
+        for (JsonElement el : servers) {
+            if (!el.isJsonObject()) {
+                continue;
+            }
+            JsonObject o = el.getAsJsonObject();
+            if (o.has("online") && !o.get("online").getAsBoolean()) {
+                continue;
+            }
+            int n = o.has("onlinePlayers") ? Math.max(0, o.get("onlinePlayers").getAsInt()) : 0;
+            mvp += n;
+            String host = str(o, "publicHost");
+            int port = o.has("publicPort") ? o.get("publicPort").getAsInt() : 0;
+            if (host != null && !host.isBlank() && port > 0) {
+                byHost.put(hostKey(host, port), n);
+            }
+        }
+        if (registry != null && registry.enabled()) {
+            for (JsonElement el : portals) {
+                if (!el.isJsonObject()) {
+                    continue;
+                }
+                JsonObject p = el.getAsJsonObject();
+                String host = str(p, "destHost");
+                int port = 0;
+                if (p.has("destJavaPort") && p.get("destJavaPort").getAsInt() > 0) {
+                    port = p.get("destJavaPort").getAsInt();
+                } else if (p.has("destPort") && p.get("destPort").getAsInt() > 0) {
+                    port = p.get("destPort").getAsInt();
+                }
+                if (host == null || host.isBlank() || port <= 0) {
+                    continue;
+                }
+                String key = hostKey(host, port);
+                if (byHost.containsKey(key)) {
+                    continue;
+                }
+                Integer scanned = registry.scannerOnlinePlayers(host, port);
+                byHost.put(key, scanned == null ? 0 : Math.max(0, scanned));
+            }
+        }
+        int network = 0;
+        for (int n : byHost.values()) {
+            network += n;
+        }
+        JsonObject players = new JsonObject();
+        players.addProperty("mvp", mvp);
+        players.addProperty("network", Math.max(mvp, network));
+        return players;
+    }
+
+    private static String hostKey(String host, int port) {
+        return host.trim().toLowerCase(Locale.ROOT) + ":" + port;
     }
 
     private void removeSelf(JsonArray servers) {
@@ -218,14 +309,42 @@ public final class CatalogShareService {
                     brand.hasIcon(),
                     0L,
                     System.currentTimeMillis(),
-                    0L
+                    0L,
+                    plugin.getServer().getOnlinePlayers().size(),
+                    plugin.getServer().getMaxPlayers()
             );
             servers.add(self);
         }
         self.addProperty("displayName", brand.name());
         self.addProperty("description", brand.description());
         self.addProperty("motd", brand.motd());
-        self.addProperty("acceptTransfers", config.acceptTransfersEnabled());
+        self.addProperty("acceptTransfers", config.guestsOpen());
+        self.addProperty("onlinePlayers", plugin.getServer().getOnlinePlayers().size());
+        self.addProperty("maxPlayers", plugin.getServer().getMaxPlayers());
+        var caps = io.multiverseportals.compat.ServerCaps.detect(config);
+        if (caps.bedrockPort() > 0) {
+            self.addProperty("bedrockPort", caps.bedrockPort());
+        }
+        if (caps.hasGeyser() || caps.hasFloodgate()) {
+            JsonObject c = self.has("caps") && self.get("caps").isJsonObject()
+                    ? self.getAsJsonObject("caps") : new JsonObject();
+            c.addProperty("geyser", caps.hasGeyser());
+            c.addProperty("floodgate", caps.hasFloodgate());
+            if (caps.bedrockPort() > 0) {
+                c.addProperty("bedrockPort", caps.bedrockPort());
+            }
+            if (caps.bedrockProtocol() > 0) {
+                c.addProperty("bedrockProtocol", caps.bedrockProtocol());
+            }
+            if (!caps.bedrockVersion().isBlank()) {
+                c.addProperty("bedrockVersion", caps.bedrockVersion());
+            }
+            c.addProperty("acceptBedrock", caps.acceptBedrock());
+            if (!caps.mvpVersion().isBlank()) {
+                c.addProperty("mvpVersion", caps.mvpVersion());
+            }
+            self.add("caps", c);
+        }
         if (brand.hasIcon()) {
             self.addProperty("hasIcon", true);
             self.addProperty("iconPngBase64", brand.iconBase64());
@@ -233,6 +352,10 @@ public final class CatalogShareService {
     }
 
     private JsonArray buildPortalsArray() {
+        return buildPortalsArray(null);
+    }
+
+    private JsonArray buildPortalsArray(Set<String> retainedServerIdsLower) {
         JsonArray portals = new JsonArray();
         if (!config.registryPublishPortals() || !config.shouldListPublicly()) {
             return portals;
@@ -240,6 +363,12 @@ public final class CatalogShareService {
         // Hub: full graph from MySQL. Peers: local portals so announce/export carries edges.
         if (registry != null && registry.enabled()) {
             for (var rp : registry.listPortals(Math.max(50, config.catalogShareMaxEntries() * 4))) {
+                if (retainedServerIdsLower != null && !retainedServerIdsLower.isEmpty()) {
+                    String sid = rp.serverId() == null ? "" : rp.serverId().toLowerCase(Locale.ROOT);
+                    if (!retainedServerIdsLower.contains(sid)) {
+                        continue;
+                    }
+                }
                 portals.add(registryPortalToJson(rp));
             }
             return portals;
@@ -544,8 +673,12 @@ public final class CatalogShareService {
                     && !o.get("acceptTransfers").getAsBoolean()) {
                 continue;
             }
-            // Hub: skip hosts that do not answer SLP from the outside
+            // Hub: skip hosts that do not answer SLP from the outside — except the announcer
+            // itself (startup heartbeat must land even if a one-shot SLP probe flakes).
+            String announcer = str(body, "serverId");
+            boolean isAnnouncer = announcer != null && announcer.equalsIgnoreCase(id);
             if (config.catalogShareHub() && registry != null && registry.enabled()
+                    && !isAnnouncer
                     && !io.multiverseportals.scanner.ServerProbe.isReachable(host, port, 2200)) {
                 plugin.getLogger().info("Catalog skip " + id + " @ " + host + ":" + port + " — unreachable from hub");
                 continue;
@@ -578,6 +711,8 @@ public final class CatalogShareService {
                         str(o, "iconPngBase64")
                 );
                 String name = brand.name().isBlank() ? str(o, "displayName") : brand.name();
+                int online = o.has("onlinePlayers") ? o.get("onlinePlayers").getAsInt() : 0;
+                int maxP = o.has("maxPlayers") ? o.get("maxPlayers").getAsInt() : 0;
                 registry.upsertPeerAnnounce(
                         id,
                         name,
@@ -589,7 +724,9 @@ public final class CatalogShareService {
                         capsFromAnnounce(o, bed),
                         brand.description(),
                         brand.motd(),
-                        brand.hasIcon() ? brand.iconPng() : null
+                        brand.hasIcon() ? brand.iconPng() : null,
+                        online,
+                        maxP
                 );
                 if (!brand.hasIcon()) {
                     scheduleHubResolveBranding(id, host, port);
@@ -705,18 +842,70 @@ public final class CatalogShareService {
         }
     }
 
-    private void pushAll() {
+    /**
+     * Startup presence: announce immediately, then retry a few times so a peer that boots
+     * while the hub is still coming up (Caddy 502) still lands in the central registry.
+     */
+    private void scheduleStartupAnnounce(int attempt) {
+        long delayTicks = switch (attempt) {
+            case 0 -> 20L;       // 1s
+            case 1 -> 20L * 8L;  // +8s
+            case 2 -> 20L * 20L; // +20s
+            case 3 -> 20L * 45L; // +45s
+            default -> 20L * 90L;
+        };
+        Bukkit.getScheduler().runTaskLaterAsynchronously(plugin, () -> {
+            try {
+                upsertSelf();
+                if (config.catalogSharePush() && config.shouldListPublicly()) {
+                    boolean ok = pushAllReturningOk();
+                    if (!ok && attempt < 4) {
+                        scheduleStartupAnnounce(attempt + 1);
+                    }
+                }
+            } catch (Exception e) {
+                plugin.getLogger().warning("Catalog startup announce failed: " + e.getMessage());
+                if (attempt < 4) {
+                    scheduleStartupAnnounce(attempt + 1);
+                }
+            }
+        }, delayTicks);
+    }
+
+    private boolean pushAllReturningOk() {
         JsonObject snap = buildExportPayload();
+        int targets = 0;
+        int ok = 0;
         for (String base : catalogTargets(false)) {
-            peerClient.catalogAnnounce(base, snap).ifPresent(resp -> {
-                if (resp.has("upserted") && resp.get("upserted").getAsInt() > 0) {
-                    plugin.getLogger().fine("Catalog push to " + base + " upserted=" + resp.get("upserted").getAsInt());
-                }
-                if (resp.has("portals") && resp.get("portals").getAsInt() > 0) {
-                    plugin.getLogger().fine("Catalog push to " + base + " portals=" + resp.get("portals").getAsInt());
-                }
-            });
+            targets++;
+            var resp = peerClient.catalogAnnounce(base, snap);
+            if (resp.isEmpty()) {
+                String why = peerClient.lastCatalogError();
+                plugin.getLogger().warning("Catalog push to " + base + " failed"
+                        + (why != null ? " (" + why + ")" : " (no response)"));
+                continue;
+            }
+            ok++;
+            if (resp.get().has("upserted") && resp.get().get("upserted").getAsInt() > 0) {
+                plugin.getLogger().fine("Catalog push to " + base + " upserted=" + resp.get().get("upserted").getAsInt());
+            }
+            if (resp.get().has("portals") && resp.get().get("portals").getAsInt() > 0) {
+                plugin.getLogger().fine("Catalog push to " + base + " portals=" + resp.get().get("portals").getAsInt());
+            }
         }
+        if (targets > 0 && ok == 0) {
+            plugin.getLogger().warning("Catalog push: all " + targets
+                    + " target(s) failed — hub down or catalog secret mismatch?");
+            return false;
+        }
+        if (ok > 0) {
+            plugin.getLogger().info("Catalog push ok (" + ok + "/" + targets + ") as " + config.serverId());
+        }
+        return ok > 0 || targets == 0;
+    }
+
+    private void pushAll() {
+        pushAllReturningOk();
     }
 
     /**
@@ -732,6 +921,35 @@ public final class CatalogShareService {
                 pushAll();
             } catch (Exception e) {
                 plugin.getLogger().warning("Catalog pushNow failed: " + e.getMessage());
+            }
+        });
+    }
+
+    /**
+     * Tell the hub this server should leave the public map now (map toggle off / guests closed).
+     * Runs even if {@link PluginConfig#shouldListPublicly()} is already false.
+     */
+    public void notifyOfflineAsync() {
+        if (!config.catalogShareEnabled()) {
+            return;
+        }
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            JsonObject body = new JsonObject();
+            body.addProperty("serverId", config.serverId());
+            body.addProperty("offline", true);
+            body.addProperty("publicHost", config.publicHost());
+            body.addProperty("publicPort", config.publicPort());
+            int ok = 0;
+            for (String base : catalogTargets(false)) {
+                try {
+                    if (peerClient.catalogAnnounceQuick(base, body).isPresent()) {
+                        ok++;
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+            if (ok > 0) {
+                plugin.getLogger().info("Catalog offline notify sent (" + ok + ")");
             }
         });
     }
@@ -844,7 +1062,9 @@ public final class CatalogShareService {
             boolean hasIcon,
             long registeredAt,
             long lastOnlineAt,
-            long lastOfflineAt
+            long lastOfflineAt,
+            int onlinePlayers,
+            int maxPlayers
     ) {
         JsonObject o = new JsonObject();
         o.addProperty("serverId", id);
@@ -893,6 +1113,8 @@ public final class CatalogShareService {
         o.addProperty("lastPingAgo", offline ? "offline" : formatPingAgo(seen));
         o.addProperty("score", score);
         o.addProperty("source", source);
+        o.addProperty("onlinePlayers", Math.max(0, onlinePlayers));
+        o.addProperty("maxPlayers", Math.max(0, maxPlayers));
         if (caps != null) {
             JsonObject c = new JsonObject();
             if (!caps.mvpVersion().isBlank()) {

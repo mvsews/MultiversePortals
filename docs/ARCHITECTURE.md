@@ -18,10 +18,10 @@ Flow:
 3. Player writes `[Multi]` / `[To]` / `[Pair]` on a sign → portal saved locally (Pair invite via hub/peers as needed)
 4. When a portal **binds** (or is created/deleted), the server pushes its portal edges to the hub so the [live map](https://mp.mvse.ws/) updates
 5. Pressure plate → travel session → `player.transfer(host, port)` (Java→Java / Bedrock→Bedrock on the same host when Geyser is present)
-6. Destination places the player at a return portal if possible, else any network portal, else spawn
+6. Destination lands the player **on the return portal plate** when known (else any network portal, else spawn). Leaf hosts without local federation **claim** pending landings from the hub (`POST /travel/claim`)
 
-Bind / MULTI target order: **hub pool (confirmed Geyser when required) → gossip club → public scanners**.  
-Nearby Random portals avoid the same destination when another target exists (`scanner.avoid-duplicate-radius`).
+Bind / MULTI target order: **network club (MVP peers with the plugin) → public scanners**; with Bedrock, confirmed-Geyser hosts rise within each tier.  
+A **button** next to a random `[Multi]` sign cycles the sticky bind (club first). Nearby Random portals avoid the same destination when another target exists (`scanner.avoid-duplicate-radius`).
 
 Inventory defaults OFF for open network (`open-network.default-*-inventory`).
 
@@ -44,11 +44,11 @@ See [REGISTRY.md](REGISTRY.md) — catalog / hub.
 ## Travel session
 
 1. Source saves local `player_state` (always).
-2. Source asks destination `/travel/offer` (signed).
-3. Destination checks import policy, returns accept + landing (+ whether landing is a true return).
+2. Source asks destination `/travel/offer` when reachable; otherwise the hub may store a pending registry travel for claim.
+3. Destination (or hub) records accept + landing (+ whether landing is a true return).
 4. Source clears/carries inventory per policy, marks session `PENDING`.
 5. Transfer packet to destination public host:port (+ cookie with session id).
-6. Destination `/join` restores or grants carried blob, status `ARRIVED`.
+6. Destination on join: local pending session and/or hub `/travel/claim` → stand at portal plate → restore inventory blob if allowed → `ARRIVED`.
 
 ## Security
 
