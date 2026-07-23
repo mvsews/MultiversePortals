@@ -36,32 +36,73 @@
 
 ---
 
-## Установка за 5 минут
+## Установка за 5 минут (свой Paper)
 
-1. Положи **`MultiversePortals-*.jar`** в `plugins/` (в имени файла — версия)  
-   → скачать: [mp.mvse.ws](https://mp.mvse.ws/)
-2. В **`server.properties`** (настройка ванильного Minecraft, не плагина):
+Сервер должен быть на **Paper 1.21+** (обычный Vanilla не подойдёт). Если Paper ещё нет — скачай здесь: [papermc.io/downloads/paper](https://papermc.io/downloads/paper), положи `paper.jar` в папку сервера и один раз запусти (создадутся `server.properties`, мир и папка `plugins`).
+
+1. **Скачай плагин** с [mp.mvse.ws](https://mp.mvse.ws/) — файл вида `MultiversePortals-….jar` (на сайте кнопка скачивания).
+2. **Положи jar в папку `plugins`** рядом с `paper.jar` (если папки нет — создай):
+   ```text
+   my-server/
+     paper.jar
+     server.properties
+     plugins/
+       MultiversePortals.jar   ← сюда
+   ```
+3. Открой **`server.properties` в корне сервера** (не внутри `plugins`) и убедись, что есть строка:
    ```properties
    accept-transfers=true
    ```
-   **Зачем:** Transfer с другого мира сработает, только если *твой* сервер разрешает входящие переходы.  
-   Без флага гости не зайдут, плагин останется в режиме **только локально** (без публичного каталога).
-3. Перезапусти. Плагин сам читает **`server-ip`** / **`server-port`** как публичный адрес.  
-   Переопредели, только если игроки заходят по другому хосту:
-   ```yaml
-   # plugins/MultiversePortals/config.yml — опционально
-   server:
-     public-host: "play.example.com"   # пусто = auto из server-ip
-     public-port: 0                    # 0 = server-port
-   ```
+   Без неё другие миры не смогут присылать к тебе игроков. При первом запуске плагин часто дописывает это сам — но после правки всё равно нужен полный перезапуск.
+4. **Полностью останови сервер и запусти снова**, чтобы плагин загрузился.
+5. Зайди в игру и напиши **`/mvp settings`** — там видно адрес сервера и, видит ли тебя публичная карта.
 
-Этого хватает для **локальных шерстяных порталов**, `[Pair]` / `[To]` по IP и — если хост доступен из интернета и `accept-transfers=true` — для появления на [mp.mvse.ws](https://mp.mvse.ws/).
+Адрес для карты и Transfer берётся из `server-ip` / `server-port` в том же `server.properties`. Менять что-то в `plugins/MultiversePortals/config.yml` нужно только если друзья заходят к тебе **по другому домену или порту** (NAT, прокси, Docker с пробросом портов):
 
-**Только локально (по умолчанию, если закрыт):** LAN / частный IP или `accept-transfers=false` → не в публичном каталоге. Принудительно: `server.list-publicly: never`.
+```yaml
+server:
+  public-host: "play.example.com"   # пусто = как server-ip
+  public-port: 25566                # 0 = как server-port; иначе порт, который реально набирают игроки
+```
 
-По желанию: ViaVersion, Geyser + Floodgate.
+**Когда сервер не появится на [mp.mvse.ws](https://mp.mvse.ws/):** закрытый LAN, приватный IP, выключенный `accept-transfers`, или снаружи указан неверный порт. Это нормально для домашней игры — порталы между своими мирами всё равно работают. Чтобы сознательно не светиться на карте: в `config.yml` поставь `server.list-publicly: never`.
 
-> **Совет:** оставь `server.display-name` пустым — в каталоге будет MOTD сервера.
+---
+
+## Установка за 1 минуту (Docker)
+
+Если Paper ещё нет и на машине есть **Docker на Linux**, можно поднять готовый мир одной командой: Paper + Multiverse Portals + Geyser (телефон / консоль) + ViaVersion. Используется `--network host` — порты слушаются прямо на хосте: Java **25565**, Bedrock **19132**.
+
+```bash
+docker run -d --name minecraft_mvp --network host -e EULA=TRUE -v mvp-data:/data mvsews/mvp && IP=$(curl -fsS https://api.ipify.org) && echo "Server ready — connect Java $IP:25565 | Bedrock $IP:19132"
+```
+
+После первого запуска подожди пару минут (скачивается Paper и генерируется мир). В конце команда напечатает IP, по которому заходить. Имя сервера, если не задать, выберется само (например, «Peppery Bridge»).
+
+**Полезные переменные** — добавляй рядом с `-e EULA=TRUE`:
+
+| Переменная | По умолчанию | Зачем |
+|------------|--------------|--------|
+| `SERVER_NAME` | забавное авто-имя | название в MOTD и на карте |
+| `MOTD` | как `SERVER_NAME` | то же, если хочешь отдельно |
+| `PUBLIC_HOST` | внешний IP (ipify) | домен или IP, который видят другие серверы / карта |
+| `PUBLIC_PORT` | `25565` | Java-порт для игроков |
+| `BEDROCK_PORT` | `19132` | UDP-порт Geyser |
+| `MEMORY` | `1G` | память JVM, например `-e MEMORY=2G` |
+| `FLOODGATE_KEY_B64` | (нет) | общий Floodgate `key.pem` в base64 — если Bedrock-игроки прыгают между «своими» серверами |
+
+Пример со своим именем и доменом:
+
+```bash
+docker run -d --name minecraft_mvp --network host \
+  -e EULA=TRUE \
+  -e SERVER_NAME="Rainbow Forest" \
+  -e PUBLIC_HOST=play.example.com \
+  -v mvp-data:/data \
+  mvsews/mvp
+```
+
+Мир и данные лежат в Docker-томе `mvp-data` — контейнер можно пересоздавать, сохранения останутся. Логи: `docker logs -f minecraft_mvp`. Остановить: `docker stop minecraft_mvp`.
 
 ---
 
@@ -152,6 +193,7 @@
 | **[portal_guide.en.md](portal_guide.en.md)** | Игроки (EN) |
 | **[portal_guide.zh.md](portal_guide.zh.md)** | Игроки (中文) |
 | **[docs/TECHNICAL.md](docs/TECHNICAL.md)** | Конфиг, производительность, сканеры, сборка |
+| **[docs/SCANNERS.md](docs/SCANNERS.md)** | Публичные сканеры для `[Multi]` · сотрудничество |
 | **[docs/REGISTRY.md](docs/REGISTRY.md)** | Публичный каталог (HTTPS) · только хаб |
 | **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** | Как устроены части |
 

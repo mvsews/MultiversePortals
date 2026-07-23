@@ -1,0 +1,43 @@
+# Seeded by mvsews/mvp image (first start).
+# PUBLIC_HOST empty → discover-public-ip fills WAN address; set PUBLIC_HOST for a domain.
+language: en
+language-per-player: true
+
+server:
+  id: ""
+  display-name: "${MVP_DISPLAY_NAME_ESC}"
+  public-host: "${MVP_PUBLIC_HOST}"
+  public-port: ${MVP_PUBLIC_PORT}
+  discover-public-ip: true
+  list-publicly: auto
+  auto-enable-accept-transfers: true
+
+registry:
+  enabled: false
+  jdbc-url: ""
+  user: ""
+  password: ""
+  multi-opt-in: true
+  heartbeat-seconds: 900
+  stale-seconds: 5400
+  publish-portals: true
+
+federation:
+  enabled: false
+  bind: "0.0.0.0"
+  port: 25765
+  path: "/mvp/v1"
+  heartbeat-seconds: 900
+
+catalog-share:
+  enabled: true
+  hub: false
+  push: true
+  pull: true
+  interval-seconds: 900
+  max-entries: 100
+  map-retain-days: 30
+  network-secret: "mvp-open-catalog"
+  public-read: true
+  auto-bootstrap: true
+  bootstrap-urls: []

@@ -6,14 +6,18 @@ import org.bukkit.Bukkit;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 
 /**
  * Merges public scanner sources (MineScan + Cornbread + Slowstack) and always writes them
  * into the local SQLite catalog. On hub, also mirrors into central MySQL scanner pool.
  * Portals pick from that catalog by score.
+ * <p>
+ * Each source is fail-open: one scanner throwing must never abort start/refresh/bind search.
  */
 public final class ScannerHub {
 
@@ -43,9 +47,9 @@ public final class ScannerHub {
             plugin.getLogger().info("Public scanner disabled");
             return;
         }
-        minescan.start();
-        cornbread.start();
-        slowstack.start();
+        safeRun("minescan.start", minescan::start);
+        safeRun("cornbread.start", cornbread::start);
+        safeRun("slowstack.start", slowstack::start);
         StringBuilder sb = new StringBuilder("Scanner hub: MineScan");
         if (config.cornbreadEnabled()) {
             sb.append(" + Cornbread");
@@ -63,9 +67,9 @@ public final class ScannerHub {
     }
 
     public void stop() {
-        minescan.stop();
-        cornbread.stop();
-        slowstack.stop();
+        safeRun("minescan.stop", minescan::stop);
+        safeRun("cornbread.stop", cornbread::stop);
+        safeRun("slowstack.stop", slowstack::stop);
     }
 
     public MineScanClient minescan() {
@@ -84,16 +88,16 @@ public final class ScannerHub {
         return db;
     }
 
-    /** Deduped merge — fresher lastSeen wins. */
+    /** Deduped merge — fresher lastSeen wins. Never throws; bad sources are skipped. */
     public List<ScannedServer> cached() {
         Map<String, ScannedServer> map = new HashMap<>();
-        for (ScannedServer s : minescan.cached()) {
+        for (ScannedServer s : safeCached("minescan", minescan::cached)) {
             map.put(key(s), s);
         }
-        for (ScannedServer s : cornbread.cached()) {
+        for (ScannedServer s : safeCached("cornbread", cornbread::cached)) {
             merge(map, s);
         }
-        for (ScannedServer s : slowstack.cached()) {
+        for (ScannedServer s : safeCached("slowstack", slowstack::cached)) {
             merge(map, s);
         }
         return new ArrayList<>(map.values());
@@ -112,27 +116,29 @@ public final class ScannerHub {
     }
 
     public int minescanSize() {
-        return minescan.cacheSize();
+        return safeInt("minescan.size", minescan::cacheSize);
     }
 
     public int cornbreadSize() {
-        return cornbread.cacheSize();
+        return safeInt("cornbread.size", cornbread::cacheSize);
     }
 
     public int slowstackSize() {
-        return slowstack.cacheSize();
+        return safeInt("slowstack.size", slowstack::cacheSize);
     }
 
     public long lastRefreshMs() {
-        return Math.max(minescan.lastRefreshMs(),
-                Math.max(cornbread.lastRefreshMs(), slowstack.lastRefreshMs()));
+        long a = safeLong("minescan.lastRefresh", minescan::lastRefreshMs);
+        long b = safeLong("cornbread.lastRefresh", cornbread::lastRefreshMs);
+        long c = safeLong("slowstack.lastRefresh", slowstack::lastRefreshMs);
+        return Math.max(a, Math.max(b, c));
     }
 
     public String lastError() {
         List<String> parts = new ArrayList<>();
-        appendErr(parts, "minescan", minescan.lastError());
-        appendErr(parts, "cornbread", cornbread.lastError());
-        appendErr(parts, "slowstack", slowstack.lastError());
+        appendErr(parts, "minescan", safeString("minescan.lastError", minescan::lastError));
+        appendErr(parts, "cornbread", safeString("cornbread.lastError", cornbread::lastError));
+        appendErr(parts, "slowstack", safeString("slowstack.lastError", slowstack::lastError));
         return String.join("; ", parts);
     }
 
@@ -147,49 +153,45 @@ public final class ScannerHub {
             publishCachedToPool();
             return;
         }
-        minescan.refreshNow();
+        safeRun("minescan.refreshNow", minescan::refreshNow);
         if (config.cornbreadEnabled()) {
-            cornbread.refreshNow();
+            safeRun("cornbread.refreshNow", cornbread::refreshNow);
         }
         if (config.slowstackEnabled() && !config.slowstackApiKey().isBlank()) {
-            slowstack.refreshNow();
+            safeRun("slowstack.refreshNow", slowstack::refreshNow);
         }
         Bukkit.getScheduler().runTaskAsynchronously(plugin, this::publishCachedToPool);
     }
 
-    public void refreshBlocking() throws Exception {
+    /**
+     * Best-effort sync refresh for bind/travel. Never throws — callers keep searching
+     * with whatever cache / SQLite catalog remains.
+     */
+    public void refreshBlocking() {
         if (shouldSkipPublic()) {
             publishCachedToPool();
             return;
         }
-        Exception first = null;
         try {
             minescan.refreshBlocking();
-        } catch (Exception e) {
-            first = e;
+        } catch (Throwable t) {
+            warn("minescan.refreshBlocking", t);
         }
         if (config.cornbreadEnabled()) {
             try {
                 cornbread.refreshBlocking();
-            } catch (Exception e) {
-                if (first == null) {
-                    first = e;
-                }
+            } catch (Throwable t) {
+                warn("cornbread.refreshBlocking", t);
             }
         }
         if (config.slowstackEnabled() && !config.slowstackApiKey().isBlank()) {
             try {
                 slowstack.refreshBlocking();
-            } catch (Exception e) {
-                if (first == null) {
-                    first = e;
-                }
+            } catch (Throwable t) {
+                warn("slowstack.refreshBlocking", t);
             }
         }
         publishCachedToPool();
-        if (first != null && cacheSize() == 0 && catalogSize() == 0) {
-            throw first;
-        }
     }
 
     private boolean shouldSkipPublic() {
@@ -197,7 +199,19 @@ public final class ScannerHub {
         if (config.catalogShareHub()) {
             return false;
         }
-        return scannerPool != null && scannerPool.preferSkipPublicScanners();
+        try {
+            if (scannerPool == null || !scannerPool.preferSkipPublicScanners()) {
+                return false;
+            }
+        } catch (Throwable t) {
+            warn("hub-pool.preferSkip", t);
+            return false;
+        }
+        // Fail-open: never skip public APIs when we have no live cache / thin SQLite
+        if (cacheSize() == 0 && catalogSize() < 8) {
+            return false;
+        }
+        return true;
     }
 
     private void publishCachedToPool() {
@@ -206,8 +220,8 @@ public final class ScannerHub {
         }
         try {
             scannerPool.publishScannedToHub(cached());
-        } catch (Exception e) {
-            plugin.getLogger().warning("Scanner hub-pool publish: " + e.getMessage());
+        } catch (Throwable t) {
+            warn("hub-pool.publish", t);
         }
     }
 
@@ -215,7 +229,62 @@ public final class ScannerHub {
         if (db == null) {
             return 0;
         }
-        return db.probeCacheStats()[0];
+        try {
+            return db.probeCacheStats()[0];
+        } catch (Throwable t) {
+            warn("catalog.size", t);
+            return 0;
+        }
+    }
+
+    private void safeRun(String label, Runnable action) {
+        try {
+            action.run();
+        } catch (Throwable t) {
+            warn(label, t);
+        }
+    }
+
+    private List<ScannedServer> safeCached(String label, Supplier<List<ScannedServer>> supplier) {
+        try {
+            List<ScannedServer> list = supplier.get();
+            return list == null ? Collections.emptyList() : list;
+        } catch (Throwable t) {
+            warn(label + ".cached", t);
+            return Collections.emptyList();
+        }
+    }
+
+    private int safeInt(String label, Supplier<Integer> supplier) {
+        try {
+            return supplier.get();
+        } catch (Throwable t) {
+            warn(label, t);
+            return 0;
+        }
+    }
+
+    private long safeLong(String label, Supplier<Long> supplier) {
+        try {
+            return supplier.get();
+        } catch (Throwable t) {
+            warn(label, t);
+            return 0L;
+        }
+    }
+
+    private String safeString(String label, Supplier<String> supplier) {
+        try {
+            return supplier.get();
+        } catch (Throwable t) {
+            warn(label, t);
+            return null;
+        }
+    }
+
+    private void warn(String label, Throwable t) {
+        String msg = t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage();
+        plugin.getLogger().warning("Scanner " + label + " failed (ignored): " + msg);
     }
 
     private static String key(ScannedServer s) {

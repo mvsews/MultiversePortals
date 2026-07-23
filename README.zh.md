@@ -36,32 +36,75 @@
 
 ---
 
-## 5 分钟安装
+## 5 分钟安装（自己的 Paper）
 
-1. 把 **`MultiversePortals-*.jar`** 放进 `plugins/`（文件名带版本号）  
-   → 下载：[mp.mvse.ws](https://mp.mvse.ws/)
-2. 在 **`server.properties`**（原版设置，不是插件配置）中：
+服务器必须是 **Paper 1.21+**（原版 Vanilla 不行）。还没有 Paper？在这里下载：[papermc.io/downloads/paper](https://papermc.io/downloads/paper)，把 `paper.jar` 放进服务器目录并先运行一次（会生成 `server.properties`、世界和 `plugins` 文件夹）。
+
+1. 从 [mp.mvse.ws](https://mp.mvse.ws/) **下载插件**，文件名类似 `MultiversePortals-….jar`（网站上的下载按钮）。
+2. 把 jar **放进 `plugins` 文件夹**（和 `paper.jar` 同级；没有就新建）：
+   ```text
+   my-server/
+     paper.jar
+     server.properties
+     plugins/
+       MultiversePortals.jar   ← 放这里
+   ```
+3. 打开服务器根目录的 **`server.properties`**（不是 `plugins` 里面），确认有：
    ```properties
    accept-transfers=true
    ```
-   **原因：** 别的服用 Transfer 把玩家送来时，你的服必须允许入站传送。  
-   关掉则客人进不来，插件进入 **仅本地** 模式（不上公共目录）。
-3. 重启。插件会自动读 **`server-ip`** / **`server-port`**。  
-   仅当玩家用的域名和 `server-ip` 不同时才覆盖：
-   ```yaml
-   # plugins/MultiversePortals/config.yml — 可选
-   server:
-     public-host: "play.example.com"   # 空 = 自动用 server-ip
-     public-port: 0                    # 0 = server-port
-   ```
+   没有这行时，别的世界没法用 Transfer 把玩家送来。首次启动插件常常会自动写上——改完后仍需**完整重启**。
+4. **完全关掉服务器再开**，让插件加载。
+5. 进游戏运行 **`/mvp settings`**，可以看到地址，以及公共地图能不能看到你。
 
-即可用羊毛本地门、`[Pair]` / `[To]`（IP）。公网可达且 `accept-transfers=true` 时才会出现在 [mp.mvse.ws](https://mp.mvse.ws/)。
+地图和 Transfer 用的地址来自同一个 `server.properties` 里的 `server-ip` / `server-port`。只有朋友用**别的域名或端口**进服时（NAT、代理、Docker 端口映射），才需要改 `plugins/MultiversePortals/config.yml`：
 
-**仅本地：** 内网 IP 或未开 `accept-transfers` → 不上公共目录。也可设 `server.list-publicly: never`。
+```yaml
+server:
+  public-host: "play.example.com"   # 空 = 用 server-ip
+  public-port: 25566                # 0 = 用 server-port；否则填玩家真正输入的端口
+```
 
-可选：ViaVersion、Geyser + Floodgate。
+**为什么可能不会出现在 [mp.mvse.ws](https://mp.mvse.ws/)：** 纯局域网、内网 IP、没开 `accept-transfers`、或对外端口填错。家里自玩完全没问题——自己服之间的传送门照常工作。想故意不上地图：在 `config.yml` 设 `server.list-publicly: never`。
 
-> **提示：** `server.display-name` 留空时，会用 Minecraft MOTD 第一行作为公开名称。
+> 提示：`server.display-name` 留空时，公开名称用 Minecraft MOTD 第一行。
+
+---
+
+## 1 分钟安装（Docker）
+
+还没有 Paper、机器上有 **Linux 上的 Docker** 时，一条命令即可：Paper + Multiverse Portals + Geyser（手机/主机）+ ViaVersion。使用 `--network host`，端口直接绑在宿主机上：Java **25565**，Bedrock **19132**。
+
+```bash
+docker run -d --name minecraft_mvp --network host -e EULA=TRUE -v mvp-data:/data mvsews/mvp && IP=$(curl -fsS https://api.ipify.org) && echo "Server ready — connect Java $IP:25565 | Bedrock $IP:19132"
+```
+
+首次启动请等几分钟（下载 Paper + 生成世界）。命令结束会打印连接用的 IP。不设置名字时会自动生成（例如 “Peppery Bridge”）。
+
+**常用环境变量**——写在 `-e EULA=TRUE` 旁边：
+
+| 变量 | 默认 | 作用 |
+|------|------|------|
+| `SERVER_NAME` | 自动趣味名 | MOTD 与地图上的名称 |
+| `MOTD` | 同 `SERVER_NAME` | 想分开写时用 |
+| `PUBLIC_HOST` | 公网 IP（ipify） | 其他服 / 地图应使用的域名或 IP |
+| `PUBLIC_PORT` | `25565` | 玩家用的 Java 端口 |
+| `BEDROCK_PORT` | `19132` | Geyser UDP 端口 |
+| `MEMORY` | `1G` | JVM 内存，例如 `-e MEMORY=2G` |
+| `FLOODGATE_KEY_B64` | （无） | 共享 Floodgate `key.pem` 的 base64——Bedrock 在「自己的」服之间跳转时用 |
+
+自定义名称和域名示例：
+
+```bash
+docker run -d --name minecraft_mvp --network host \
+  -e EULA=TRUE \
+  -e SERVER_NAME="Rainbow Forest" \
+  -e PUBLIC_HOST=play.example.com \
+  -v mvp-data:/data \
+  mvsews/mvp
+```
+
+世界与数据在 Docker 卷 `mvp-data` 里——重建容器不会丢档。日志：`docker logs -f minecraft_mvp`。停止：`docker stop minecraft_mvp`。
 
 ---
 

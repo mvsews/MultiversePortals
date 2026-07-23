@@ -93,8 +93,8 @@ public final class CornbreadScanClient {
     private void refreshSafe() {
         try {
             refresh();
-        } catch (Exception e) {
-            lastError = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+        } catch (Throwable t) {
+            lastError = t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage();
             lastErrorMs.set(System.currentTimeMillis());
             plugin.getLogger().warning("Cornbread refresh failed: " + lastError);
         }
@@ -190,6 +190,7 @@ public final class CornbreadScanClient {
         int stored = 0;
         if (db != null) {
             stored = db.upsertScannedServers(next);
+            db.pruneLocalCatalogIfNeeded(config);
         }
         plugin.getLogger().info("Cornbread cache: " + cache.size() + " servers (version~" + version
                 + (stored > 0 ? ", catalog+" + stored : "") + ")");

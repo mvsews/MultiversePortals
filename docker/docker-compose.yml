@@ -1,0 +1,38 @@
+# Multiverse Portals — host network, standard MC ports
+#
+#   docker compose -f docker/docker-compose.yml up -d
+#
+# Optional overrides:
+#   PUBLIC_HOST=play.example.com   # domain instead of auto IP
+#   PUBLIC_PORT=25565              # Java (default)
+#   BEDROCK_PORT=19132             # Geyser UDP (default)
+#
+services:
+  mvp:
+    image: mvsews/mvp:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        MVP_JAR: build/libs/MultiversePortals-1.1.16.jar
+    container_name: minecraft_mvp
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      EULA: "TRUE"
+      TYPE: PAPER
+      VERSION: "1.21.10"
+      ONLINE_MODE: "FALSE"
+      MEMORY: "1G"
+      # Empty = auto WAN IP (ipify). Set to a domain if you want DNS.
+      PUBLIC_HOST: "${PUBLIC_HOST:-}"
+      PUBLIC_PORT: "${PUBLIC_PORT:-25565}"
+      BEDROCK_PORT: "${BEDROCK_PORT:-19132}"
+      # Empty = funny English name (persisted). Or set SERVER_NAME / MOTD.
+      SERVER_NAME: "${SERVER_NAME:-}"
+      # FLOODGATE_KEY_B64: ""
+    volumes:
+      - mvp-data:/data
+
+volumes:
+  mvp-data:

@@ -908,12 +908,64 @@ public final class PluginConfig {
     }
 
     /**
+     * Dial / Multi bind: hosts successfully chosen in this window are skipped so the
+     * dial button and nearby signs do not keep flipping hub ↔ one peer. 0 disables.
+     */
+    public int dialRecentExcludeSeconds() {
+        return Math.max(0, plugin.getConfig().getInt("scanner.dial-recent-exclude-seconds", 300));
+    }
+
+    /**
      * When a Random portal binds, avoid picking a server that another portal within this radius
      * (blocks, same world) already points to. 0 disables. Falls back to a duplicate only if no
      * other target exists.
      */
     public double avoidDuplicateRadius() {
         return Math.max(0, plugin.getConfig().getDouble("scanner.avoid-duplicate-radius", 100.0));
+    }
+
+    // --- flow-balance (Multi dest soft ranking by online) ---
+
+    public boolean flowBalanceEnabled() {
+        return plugin.getConfig().getBoolean("scanner.flow-balance.enabled", true);
+    }
+
+    /** Live OK probes to collect before flow-pick; lower = faster bind. */
+    public int flowLiveOkBand() {
+        return Math.max(1, plugin.getConfig().getInt("scanner.flow-balance.live-ok-band", 2));
+    }
+
+    public io.multiverseportals.scanner.FlowBalance.Weights flowBalanceWeights() {
+        return new io.multiverseportals.scanner.FlowBalance.Weights(
+                flowBalanceEnabled(),
+                Math.max(0, plugin.getConfig().getInt("scanner.flow-balance.busy-at", 12)),
+                Math.max(0, plugin.getConfig().getInt("scanner.flow-balance.quiet-at", 4)),
+                Math.max(1, plugin.getConfig().getInt("scanner.flow-balance.mega-online", 80)),
+                Math.max(0.0, plugin.getConfig().getDouble("scanner.flow-balance.mega-penalty", 80.0)),
+                Math.max(0.0, plugin.getConfig().getDouble("scanner.flow-balance.mega-penalty-per-extra", 0.5)),
+                Math.max(0.0, plugin.getConfig().getDouble("scanner.flow-balance.empty-penalty", 8.0)),
+                plugin.getConfig().getBoolean("scanner.flow-balance.mega-hard-cap", false),
+                Math.max(0, plugin.getConfig().getInt("scanner.flow-balance.quiet-target-min", 3)),
+                Math.max(0, plugin.getConfig().getInt("scanner.flow-balance.quiet-target-max", 25)),
+                Math.max(0.0, plugin.getConfig().getDouble("scanner.flow-balance.busy-prefer-quiet-weight", 1.0)),
+                Math.max(0.0, plugin.getConfig().getDouble("scanner.flow-balance.quiet-prefer-band-weight", 1.0)),
+                Math.max(0.0, plugin.getConfig().getDouble("scanner.flow-balance.near-tie-epsilon", 2.0))
+        );
+    }
+
+    // --- local SQLite probe_cache cap (not hub MySQL) ---
+
+    /** 0 = unlimited. */
+    public int scannerCatalogMaxEntries() {
+        return Math.max(0, plugin.getConfig().getInt("scanner.catalog.max-entries", 2500));
+    }
+
+    public int scannerCatalogPruneBatch() {
+        return Math.max(1, plugin.getConfig().getInt("scanner.catalog.prune-batch", 200));
+    }
+
+    public double scannerCatalogProtectOkMinScore() {
+        return plugin.getConfig().getDouble("scanner.catalog.protect-ok-min-score", 20.0);
     }
 
     public boolean scannerHubPoolEnabled() {

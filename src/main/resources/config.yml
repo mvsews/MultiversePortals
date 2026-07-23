@@ -14,9 +14,11 @@ server:
   # Public label on mp.mvse.ws / catalogs. Empty or "auto" → Minecraft MOTD.
   display-name: ""
   # Address others use for Transfer HERE. Empty/"auto" → server-ip, else local guess.
-  # Set a domain/IP if players join you via a different hostname than server-ip.
+  # Set a domain/IP if players join you via a different hostname than server-ip
+  # (Docker bridge 172.17.*, LAN, etc. will not list publicly).
   public-host: ""
-  # 0 = use server-port from server.properties / Bukkit
+  # 0 = use server-port from server.properties / Bukkit.
+  # If host maps another port (docker -p 25566:25565, router NAT), set that external port here.
   public-port: 0
   # If public-host still looks LAN-only, optionally query api.ipify.org once (privacy: off)
   discover-public-ip: false
@@ -69,6 +71,8 @@ catalog-share:
   # Hub may allow unsigned catalog/export (public directory of plugin hosts)
   public-read: true
   # When bootstrap-urls empty: auto-join official hub https://mp.mvse.ws/mvp/v1
+  # Hub outages are non-fatal: local portals, Pair/[To] by IP, and Multi via public scanners keep working.
+  # When the hub returns, catalog push/pull resumes automatically.
   auto-bootstrap: true
   # Override hub(s), or set ["none"] / auto-bootstrap: false to opt out
   bootstrap-urls: []
@@ -170,10 +174,36 @@ scanner:
   bind-prefer-geyser: true
   # Bedrock creators only — Java creators accept Java-only hosts
   bind-require-geyser: true
+  # Dial button / Multi bind: skip hosts already chosen in this window (seconds). 0 = off
+  dial-recent-exclude-seconds: 300
   # Random portals avoid a destination that another portal within this radius (blocks,
   # same world) already leads to. Used as a last resort only. 0 = off
   avoid-duplicate-radius: 100
-  # Central hub pool (mp.mvse.ws) — pull candidates before public scanners
+  # Soft rank Multi candidates by origin vs dest online (busy→quiet). All weights tunable.
+  flow-balance:
+    enabled: true
+    busy-at: 12
+    quiet-at: 4
+    mega-online: 80
+    mega-penalty: 80
+    mega-penalty-per-extra: 0.5
+    empty-penalty: 8
+    mega-hard-cap: false
+    quiet-target-min: 3
+    quiet-target-max: 25
+    busy-prefer-quiet-weight: 1.0
+    quiet-prefer-band-weight: 1.0
+    # Near-tie band for soft shuffle inside a tier (±score)
+    near-tie-epsilon: 2.0
+    # How many live OK probes to collect before flow-pick (lower = faster Multi bind)
+    live-ok-band: 2
+  # Local SQLite probe_cache only — NOT the central hub MySQL pool (hub stays large for stats).
+  catalog:
+    max-entries: 2500
+    prune-batch: 200
+    protect-ok-min-score: 20
+  # Central hub pool (mp.mvse.ws) — optional accelerator before public scanners.
+  # If the hub is down, Multi binds fall back to MineScan/Cornbread/Slowstack automatically.
   hub-pool:
     enabled: true
     pull-before-bind: true
@@ -181,6 +211,10 @@ scanner:
     report-finds: true
     prefer-hub-over-public: true
     min-hub-candidates: 15
+    # Central catalog score = Transfer outcomes (ARRIVED / bounce), not SLP probes
+    transfer-success-score: 20
+    transfer-fail-score: 40
+    probe-affects-score: false
 
 # Consent for one-way transfers (no return portal on the other side)
 ready:

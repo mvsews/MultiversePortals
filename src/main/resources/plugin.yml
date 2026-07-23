@@ -3,7 +3,7 @@ version: ${version}
 main: io.multiverseportals.MultiversePortalsPlugin
 api-version: "1.21"
 authors: [Kosty]
-description: Cross-server and local wool portals. Build a sign — travel.
+description: Cross-server and local wool portals for Paper 1.21+. Build a sign — travel.
 softdepend: [Vault, ViaVersion, ViaBackwards, ViaRewind]
 commands:
   mvp:

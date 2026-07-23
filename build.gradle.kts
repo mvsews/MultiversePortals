@@ -3,7 +3,7 @@ plugins {
 }
 
 group = "io.multiverseportals"
-version = "1.1.15"
+version = "1.1.16"
 
 java {
     toolchain {
@@ -22,6 +22,12 @@ dependencies {
     implementation("org.xerial:sqlite-jdbc:3.47.2.0")
     implementation("com.mysql:mysql-connector-j:9.1.0")
     implementation("com.google.code.gson:gson:2.11.0")
+
+    testImplementation("org.junit.jupiter:junit-jupiter:5.11.4")
+}
+
+tasks.test {
+    useJUnitPlatform()
 }
 
 tasks.processResources {

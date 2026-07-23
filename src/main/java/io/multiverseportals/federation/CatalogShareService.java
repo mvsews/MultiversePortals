@@ -12,6 +12,7 @@ import org.bukkit.Bukkit;
 import org.bukkit.scheduler.BukkitTask;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -97,12 +98,19 @@ public final class CatalogShareService {
         long retainCutoff = now - retainMs;
         JsonArray servers = new JsonArray();
         Set<String> seen = new LinkedHashSet<>();
+        Set<String> seenEndpoints = new LinkedHashSet<>();
         Set<String> retainedIds = new LinkedHashSet<>();
 
         if (config.catalogShareHub() && registry != null && registry.enabled()) {
             // Keep offline servers on the map for map-retain-days (default 30d), then drop them
             long hubAge = Math.max(retainMs, config.registryStaleMs());
-            for (RegistryServer rs : registry.listAll(hubAge)) {
+            Map<String, Integer> degrees = registry.hubLinkDegrees();
+            List<RegistryServer> hubServers = new ArrayList<>(registry.listAll(hubAge));
+            // Prefer freshest heartbeat so a renamed/re-id'd host:port wins over stale twins.
+            hubServers.sort(Comparator
+                    .comparingLong(RegistryServer::lastHeartbeat).reversed()
+                    .thenComparingInt((RegistryServer rs) -> degrees.getOrDefault(rs.serverId(), 0)));
+            for (RegistryServer rs : hubServers) {
                 if (!rs.hasPlugin() || !rs.multiOptIn()) {
                     continue;
                 }
@@ -113,13 +121,18 @@ public final class CatalogShareService {
                 if (!seen.add(rs.serverId().toLowerCase(Locale.ROOT))) {
                     continue;
                 }
+                if (rs.publicHost() != null && !rs.publicHost().isBlank() && rs.publicPort() > 0
+                        && !seenEndpoints.add(hostKey(rs.publicHost(), rs.publicPort()))) {
+                    continue;
+                }
                 retainedIds.add(rs.serverId().toLowerCase(Locale.ROOT));
                 boolean serverOnline = rs.lastOfflineAt() <= 0
                         || (rs.lastOnlineAt() > 0 && rs.lastOfflineAt() < rs.lastOnlineAt());
                 int onlinePlayers = serverOnline && rs.onlinePlayers() != null
                         ? Math.max(0, rs.onlinePlayers()) : 0;
                 int maxPlayers = rs.maxPlayers() != null ? Math.max(0, rs.maxPlayers()) : 0;
-                servers.add(toJson(
+                int degree = degrees.getOrDefault(rs.serverId(), 0);
+                JsonObject row = toJson(
                         rs.serverId(),
                         publicLabel(rs.displayName(), rs.motd(), rs.serverId()),
                         rs.publicHost(),
@@ -128,7 +141,7 @@ public final class CatalogShareService {
                         rs.mcVersion(),
                         rs.caps().bedrockPort(),
                         rs.lastHeartbeat(),
-                        80,
+                        RegistryDatabase.sparseHubScore(degree),
                         "registry",
                         rs.caps(),
                         rs.motd(),
@@ -139,7 +152,9 @@ public final class CatalogShareService {
                         rs.lastOfflineAt(),
                         onlinePlayers,
                         maxPlayers
-                ));
+                );
+                row.addProperty("hubLinks", degree);
+                servers.add(row);
                 if (servers.size() >= max) {
                     break;
                 }
@@ -152,6 +167,10 @@ public final class CatalogShareService {
                     continue;
                 }
                 if (!seen.add(k.serverId().toLowerCase(Locale.ROOT))) {
+                    continue;
+                }
+                if (k.publicHost() != null && !k.publicHost().isBlank() && k.publicPort() > 0
+                        && !seenEndpoints.add(hostKey(k.publicHost(), k.publicPort()))) {
                     continue;
                 }
                 retainedIds.add(k.serverId().toLowerCase(Locale.ROOT));
@@ -792,10 +811,12 @@ public final class CatalogShareService {
         if (registry == null || !registry.enabled()) {
             return;
         }
+        Map<String, Integer> degrees = registry.hubLinkDegrees();
         for (RegistryServer rs : registry.listMultiTargets(config.registryStaleMs() * 2)) {
             if (!rs.hasPlugin()) {
                 continue;
             }
+            int degree = degrees.getOrDefault(rs.serverId(), 0);
             db.upsertKnownMvp(
                     rs.serverId(),
                     publicLabel(rs.displayName(), rs.motd(), rs.serverId()),
@@ -805,7 +826,7 @@ public final class CatalogShareService {
                     rs.mcVersion(),
                     rs.caps().bedrockPort(),
                     rs.lastHeartbeat(),
-                    90,
+                    RegistryDatabase.sparseHubScore(degree),
                     "registry"
             );
         }
@@ -827,6 +848,21 @@ public final class CatalogShareService {
                 100,
                 "self"
         );
+    }
+
+    /**
+     * Blocking catalog pull used before Multi/dial bind so known_mvp / club peers are fresh.
+     */
+    public void pullForBindBlocking() {
+        if (!config.catalogShareEnabled() || !config.catalogSharePull()) {
+            return;
+        }
+        try {
+            pullAll();
+        } catch (Exception e) {
+            plugin.getLogger().warning("Catalog pull-before-bind failed: "
+                    + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
+        }
     }
 
     private void pullAll() {

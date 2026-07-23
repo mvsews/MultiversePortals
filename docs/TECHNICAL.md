@@ -12,7 +12,7 @@ Deep notes for operators who already finished the [main README](../README.md).
 | **Paper 1.21+** | Yes | Modern Paper API; cross-server hops use vanilla **Transfer** (1.20.5+) |
 | Jar in `plugins/` | Yes | Soft-depends are optional |
 | `accept-transfers=true` | **Yes to receive guests / public list** | Vanilla `server.properties` gate. Peers can *send* Transfer without it, but **your** server rejects the join. Plugin treats missing/`false` as **local-only** (no public catalog announce). |
-| `server.public-host` / `public-port` | Optional | Empty/`auto` / `public-port: 0` → use `server-ip` + `server-port`. Override when the join hostname differs. |
+| `server.public-host` / `public-port` | Optional | Empty/`auto` / `public-port: 0` → use `server-ip` + `server-port`. **Must** override when the join host **or external port** differs (Docker `-p`, NAT, reverse proxy). |
 | Open TCP/UDP | Yes for public play | Transfer only retargets the client; NAT/firewall must allow joins |
 | ViaVersion (+ Backwards/Rewind) | Recommended | Version bridge + compatibility checks |
 | Geyser + Floodgate | Bedrock only | Bedrock uses Geyser transfer |
@@ -35,15 +35,25 @@ Order for host: config `server.public-host` → `server-ip` / `Bukkit.getIp()` �
 Optional `server.discover-public-ip: true` queries ipify once if the host still looks LAN-only (off by default).  
 Port: config `public-port` if &gt; 0, else `server-port` / `Bukkit.getPort()`.
 
+**Docker / NAT:** Minecraft inside the container usually binds `25565`, while the host publishes another port (`docker run -p 25566:25565` → players use **25566**). Auto resolve advertises **25565** and a bridge IP like `172.17.0.x` → catalog stays **local-only** (private) or lists a dead port. Fix:
+
+```yaml
+server:
+  public-host: "203.0.113.10"   # or your domain — not 172.17.*
+  public-port: 25566            # host/NAT port players connect to
+```
+
+Same idea for router port-forward (WAN `25570` → LAN `25565`): set `public-port: 25570`.
+
 ### Local-only vs public catalog
 
 | Situation | Catalog listing |
 |-----------|-----------------|
-| Private/LAN host (`127.*`, `10.*`, `192.168.*`, …) | **No** (local-only) |
+| Private/LAN host (`127.*`, `10.*`, `192.168.*`, `172.16–31.*`, …) | **No** (local-only) |
 | `accept-transfers` false/missing | **No** |
 | `server.list-publicly: never` | **No** |
 | Public host + accept-transfers + reachable from hub | **Yes** |
-| `server.list-publicly: always` | Force announce (hub may still drop unreachable) |
+| `server.list-publicly: always` | Force announce (hub may still drop unreachable / wrong port) |
 
 Local wool portals, `[Pair]`, and `[To]` by IP keep working in local-only mode.
 
@@ -59,7 +69,7 @@ Local wool portals, `[Pair]`, and `[To]` by IP keep working in local-only mode.
 | **Landing** | Cross-server arrivals stand on the return portal plate when known |
 | **Travel claim** | Leaf servers without local federation claim pending landings from the hub over HTTPS |
 | **Local wool portals** | ColorPortals-style ring TP on the same server |
-| **Scanners** | MineScan + Cornbread (+ optional Slowstack) → local SQLite score |
+| **Scanners** | MineScan + Cornbread + Slowstack (hub API key) → local SQLite score — [SCANNERS.md](SCANNERS.md) |
 | **Public catalog** | Auto-join `https://mp.mvse.ws/mvp/v1` (HTTPS) — [REGISTRY.md](REGISTRY.md) |
 | **Catalog share** | Gossip on by default (`catalog-share.enabled`) |
 | **Bedrock** | Geyser UDP + protocol match from RakNet pong |
@@ -120,8 +130,8 @@ language: en   # en | de | ru | zh
 server:
   id: my-server
   display-name: ""          # empty / auto → Minecraft MOTD line 1
-  public-host: ""           # empty → server-ip; or set play.example.com
-  public-port: 0            # 0 → server-port
+  public-host: ""           # empty → server-ip; set public IP/domain behind Docker/NAT
+  public-port: 0            # 0 → server-port; set mapped host port if different (e.g. 25566)
   list-publicly: auto       # auto | always | never
   discover-public-ip: false
 
@@ -141,7 +151,10 @@ catalog-share:
 scanner:
   bind-search-seconds: 90
   bind-require-geyser: true # Random portals prefer Geyser-capable hosts
+  dial-recent-exclude-seconds: 300  # dial/Multi: skip hosts chosen in last 5 min
   avoid-duplicate-radius: 100  # nearby Random portals → different targets when possible
+  flow-balance:
+    live-ok-band: 2         # OK probes before flow-pick (lower = faster bind)
   hub-pool:
     enabled: true           # pull candidates from the public hub before scanners
 
@@ -198,6 +211,7 @@ Lightest: `[Pair]` only or local wool only. Heaviest: many `[Multi]` + matter + 
 - Public network — HTTPS catalog at `mp.mvse.ws` (Universal database behind the open API)  
 - Portal edges pushed to the hub when portals bind/change (live map)  
 - Soft APIs: Via*, Geyser, Floodgate (reflection)
+- **Hub optional:** `mp.mvse.ws` outages do not disable the plugin. Catalog push/pull cools down; `[Multi]` binds fall back to public scanners + local SQLite; sticky Transfer still works. When the hub returns, share resumes automatically.
 
 Deeper: [ARCHITECTURE.md](ARCHITECTURE.md) · hub: [REGISTRY.md](REGISTRY.md).
 
@@ -212,7 +226,59 @@ JDK **21** + Gradle:
 # → build/libs/MultiversePortals-<version>.jar
 ```
 
-Current release: **1.1.15** · site / jar: [https://mp.mvse.ws/](https://mp.mvse.ws/)
+Current release: **1.1.16** · site / jar: [https://mp.mvse.ws/](https://mp.mvse.ws/)
+
+---
+
+## Planned
+
+| Item | Intent |
+|------|--------|
+| **Inter-server ping scoring** | During `[Multi]` bind / candidate ranking, measure RTT from this server to the destination (Java SLP or TCP probe timing), keep a small latency cache, and prefer lower-ping hosts so players land on nearer worlds when version/auth/Geyser still match. Club peers and dual-stack rules stay first; ping is an extra score signal, not a hard filter. |
+| **Mod / modpack matching** | When this host runs a modded stack (Forge, Fabric, NeoForge, Quilt, …), detect loader + mod fingerprint (from server ping / plugin list / configured pack id) and prefer `[Multi]` destinations that advertise a compatible set — same modpack or high overlap — so players are not sent to vanilla (or a conflicting pack). Vanilla ↔ vanilla stays unconstrained; mismatch is soft-scored unless configured as hard reject. |
+
+### Done recently
+
+| Item | Notes |
+|------|--------|
+| **Balanced player flow** | Soft-rank `[Multi]` candidates by origin vs dest online (`scanner.flow-balance.*`). Busy origins prefer quieter dests; quiet origins prefer a moderate band; large soft penalty for mega online; small empty penalty. Club/Geyser tiers unchanged. Ops: `/mvp bindpreview` shows `online` + `flowScore`; A/B via `enabled: false` + `/mvp reload`. |
+| **Hub transfer score** | Central `registry_scanner_hosts.score` from Transfer outcomes: ARRIVED `+transfer-success-score` (default 20), bounce `−transfer-fail-score` (default 40). SLP probes refresh status only (`probe-affects-score: false`). |
+| **Dial recent exclude** | Button / Multi bind skips hosts chosen in the last `dial-recent-exclude-seconds` (default 300) so the dial does not flip hub ↔ one peer. Soft-fallback if the fresh pool is empty. Faster binds: `flow-balance.live-ok-band` (default 2), merge hub `probe_cache` into the candidate pool. |
+| **Club-then-public bind** | Multi/dial always pulls central catalog + hub-pool first. Probes MVP club peers as their own phase; nearby-duplicate / recent-exclude skip a host and continue. After the club tier is exhausted, bind falls through to public scanners — duplicate reuse is last-resort only when no other live target exists. |
+| **Sparse hub mesh** | Hub `listMultiTargets` / catalog export prefer MVP peers with fewer ACTIVE portal links (`hubLinks`). Score ≈ `100 − 12×degree`. Club bind order uses the same sparsity before public flow-balance. |
+
+Scanners overview / discovery roadmap: [SCANNERS.md](SCANNERS.md).
+
+#### Tunable weights (`scanner.flow-balance`)
+
+| Key | Default | Role |
+|-----|---------|------|
+| `enabled` | `true` | Off → old shuffle-within-tier |
+| `busy-at` / `quiet-at` | `12` / `4` | Origin mode thresholds |
+| `mega-online` / `mega-penalty` / `mega-penalty-per-extra` | `80` / `80` / `0.5` | Soft hit on giants |
+| `empty-penalty` | `8` | Soft hit when dest online is 0 |
+| `mega-hard-cap` | `false` | If true, skip non-club mega hosts |
+| `quiet-target-min` / `quiet-target-max` | `3` / `25` | Quiet-origin sweet band (`min: 0` + `empty-penalty: 0` to allow empties) |
+| `near-tie-epsilon` | `2.0` | Shuffle near-ties inside a tier |
+| `live-ok-band` | `2` | Live OK probes before flow-pick (lower = faster `[Multi]` bind) |
+
+#### Local catalog (`scanner.catalog`)
+
+| Key | Default | Role |
+|-----|---------|------|
+| `max-entries` | `2500` | Cap local `probe_cache` (`0` = unlimited) |
+| `prune-batch` | `200` | Max rows deleted per prune |
+| `protect-ok-min-score` | `20` | High-score OK rows evicted after DEAD/stale |
+
+#### Hub transfer score (`scanner.hub-pool`)
+
+| Key | Default | Role |
+|-----|---------|------|
+| `transfer-success-score` | `20` | Added when a hop ARRIVED on dest |
+| `transfer-fail-score` | `40` | Subtracted on bounce-back (player returned to origin) |
+| `probe-affects-score` | `false` | If true, SLP probe OK/DEAD also nudge score (legacy) |
+
+Ops compare checklist: set `flow-balance.enabled: false` → `/mvp reload` → `/mvp bindpreview` → enable again → preview → compare top ranks.
 
 ---
 

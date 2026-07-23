@@ -13,6 +13,7 @@ import org.bukkit.plugin.java.JavaPlugin;
 import java.sql.*;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -195,6 +196,8 @@ public final class RegistryDatabase {
                 """);
             // landing_return: 1 = to_portal_id leads home; 0 = fallback placement at any portal
             alterIgnore(st, "ALTER TABLE registry_travel ADD COLUMN landing_return TINYINT(1) NOT NULL DEFAULT 0");
+            alterIgnore(st, "ALTER TABLE registry_travel ADD COLUMN dest_host VARCHAR(255) NULL");
+            alterIgnore(st, "ALTER TABLE registry_travel ADD COLUMN dest_java_port INT NULL");
             st.execute("""
                 CREATE TABLE IF NOT EXISTS registry_scanner_hosts (
                   host               VARCHAR(255) NOT NULL,
@@ -526,8 +529,65 @@ public final class RegistryDatabase {
             ps.setLong(i, now);
             ps.executeUpdate();
             updateBranding(serverId.trim(), displayName, description, motd, iconPng);
+            // Same public host:port = same physical server (name / serverId may change).
+            retireDuplicateEndpoints(serverId.trim(), publicHost.trim(), publicPort);
         } catch (SQLException e) {
             plugin.getLogger().warning("Registry peer upsert failed for " + serverId + ": " + e.getMessage());
+        }
+    }
+
+    /**
+     * Remove other registry rows that advertise the same join endpoint.
+     * Display-name or serverId churn must not create duplicate map markers.
+     */
+    public int retireDuplicateEndpoints(String keepServerId, String publicHost, int publicPort) {
+        if (!enabled() || keepServerId == null || keepServerId.isBlank()
+                || publicHost == null || publicHost.isBlank() || publicPort <= 0) {
+            return 0;
+        }
+        String keep = keepServerId.trim();
+        String host = publicHost.trim();
+        List<String> victims = new ArrayList<>();
+        String select = """
+            SELECT server_id FROM registry_servers
+            WHERE LOWER(public_host)=LOWER(?) AND public_port=? AND server_id<>?
+            """;
+        try (Connection c = ds.getConnection()) {
+            try (PreparedStatement ps = c.prepareStatement(select)) {
+                ps.setString(1, host);
+                ps.setInt(2, publicPort);
+                ps.setString(3, keep);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        String id = rs.getString(1);
+                        if (id != null && !id.isBlank()) {
+                            victims.add(id.trim());
+                        }
+                    }
+                }
+            }
+            if (victims.isEmpty()) {
+                return 0;
+            }
+            try (PreparedStatement delP = c.prepareStatement(
+                    "DELETE FROM registry_portals WHERE server_id=?");
+                 PreparedStatement delS = c.prepareStatement(
+                         "DELETE FROM registry_servers WHERE server_id=?")) {
+                for (String id : victims) {
+                    delP.setString(1, id);
+                    delP.executeUpdate();
+                    delS.setString(1, id);
+                    delS.executeUpdate();
+                }
+            }
+            plugin.getLogger().info("Registry: merged " + victims.size()
+                    + " duplicate endpoint(s) " + host + ":" + publicPort
+                    + " into " + keep + " (" + String.join(", ", victims) + ")");
+            return victims.size();
+        } catch (SQLException e) {
+            plugin.getLogger().warning("Registry endpoint dedupe failed for "
+                    + host + ":" + publicPort + ": " + e.getMessage());
+            return 0;
         }
     }
 
@@ -1187,17 +1247,55 @@ public final class RegistryDatabase {
         }
     }
 
-    /** Alive multi-capable servers excluding self. */
+    /** Alive multi-capable servers excluding self — sparsest hub mesh first (fewest portal links). */
     public List<RegistryServer> listMultiTargets(long maxAgeMs) {
         if (!enabled()) {
             return List.of();
         }
         long minHb = System.currentTimeMillis() - maxAgeMs;
+        // Prefer servers with fewer unique hub↔hub portal edges so the mesh fills in faster.
         String sql = """
-            SELECT * FROM registry_servers
-            WHERE multi_opt_in=1 AND accept_transfers=1 AND last_heartbeat>=?
-              AND server_id<>?
-            ORDER BY last_heartbeat DESC
+            SELECT s.* FROM registry_servers s
+            LEFT JOIN (
+              SELECT peer_id AS server_id, COUNT(DISTINCT other_id) AS degree
+              FROM (
+                SELECT server_id AS peer_id, dest_server_id AS other_id
+                FROM registry_portals
+                WHERE dest_server_id IS NOT NULL AND dest_server_id <> ''
+                  AND dest_server_id <> server_id
+                  AND status = 'ACTIVE'
+                UNION
+                SELECT dest_server_id AS peer_id, server_id AS other_id
+                FROM registry_portals
+                WHERE dest_server_id IS NOT NULL AND dest_server_id <> ''
+                  AND dest_server_id <> server_id
+                  AND status = 'ACTIVE'
+                UNION
+                SELECT p.server_id AS peer_id, s2.server_id AS other_id
+                FROM registry_portals p
+                INNER JOIN registry_servers s2
+                  ON LOWER(s2.public_host) = LOWER(p.dest_host)
+                 AND (p.dest_java_port IS NULL OR p.dest_java_port <= 0 OR p.dest_java_port = s2.public_port)
+                WHERE p.dest_host IS NOT NULL AND p.dest_host <> ''
+                  AND (p.dest_server_id IS NULL OR p.dest_server_id = '')
+                  AND s2.server_id <> p.server_id
+                  AND p.status = 'ACTIVE'
+                UNION
+                SELECT s2.server_id AS peer_id, p.server_id AS other_id
+                FROM registry_portals p
+                INNER JOIN registry_servers s2
+                  ON LOWER(s2.public_host) = LOWER(p.dest_host)
+                 AND (p.dest_java_port IS NULL OR p.dest_java_port <= 0 OR p.dest_java_port = s2.public_port)
+                WHERE p.dest_host IS NOT NULL AND p.dest_host <> ''
+                  AND (p.dest_server_id IS NULL OR p.dest_server_id = '')
+                  AND s2.server_id <> p.server_id
+                  AND p.status = 'ACTIVE'
+              ) edges
+              GROUP BY peer_id
+            ) d ON d.server_id = s.server_id
+            WHERE s.multi_opt_in=1 AND s.accept_transfers=1 AND s.last_heartbeat>=?
+              AND s.server_id<>?
+            ORDER BY COALESCE(d.degree, 0) ASC, s.last_heartbeat DESC
             """;
         List<RegistryServer> list = new ArrayList<>();
         try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
@@ -1212,6 +1310,65 @@ public final class RegistryDatabase {
             plugin.getLogger().warning("Registry list failed: " + e.getMessage());
         }
         return list;
+    }
+
+    /**
+     * Unique hub peers each server is linked to via ACTIVE portal edges (undirected).
+     * Missing key ⇒ 0 links.
+     */
+    public Map<String, Integer> hubLinkDegrees() {
+        if (!enabled()) {
+            return Map.of();
+        }
+        String sql = """
+            SELECT peer_id, COUNT(DISTINCT other_id) AS degree
+            FROM (
+              SELECT server_id AS peer_id, dest_server_id AS other_id
+              FROM registry_portals
+              WHERE dest_server_id IS NOT NULL AND dest_server_id <> ''
+                AND dest_server_id <> server_id AND status = 'ACTIVE'
+              UNION
+              SELECT dest_server_id AS peer_id, server_id AS other_id
+              FROM registry_portals
+              WHERE dest_server_id IS NOT NULL AND dest_server_id <> ''
+                AND dest_server_id <> server_id AND status = 'ACTIVE'
+              UNION
+              SELECT p.server_id AS peer_id, s2.server_id AS other_id
+              FROM registry_portals p
+              INNER JOIN registry_servers s2
+                ON LOWER(s2.public_host) = LOWER(p.dest_host)
+               AND (p.dest_java_port IS NULL OR p.dest_java_port <= 0 OR p.dest_java_port = s2.public_port)
+              WHERE p.dest_host IS NOT NULL AND p.dest_host <> ''
+                AND (p.dest_server_id IS NULL OR p.dest_server_id = '')
+                AND s2.server_id <> p.server_id AND p.status = 'ACTIVE'
+              UNION
+              SELECT s2.server_id AS peer_id, p.server_id AS other_id
+              FROM registry_portals p
+              INNER JOIN registry_servers s2
+                ON LOWER(s2.public_host) = LOWER(p.dest_host)
+               AND (p.dest_java_port IS NULL OR p.dest_java_port <= 0 OR p.dest_java_port = s2.public_port)
+              WHERE p.dest_host IS NOT NULL AND p.dest_host <> ''
+                AND (p.dest_server_id IS NULL OR p.dest_server_id = '')
+                AND s2.server_id <> p.server_id AND p.status = 'ACTIVE'
+            ) edges
+            GROUP BY peer_id
+            """;
+        Map<String, Integer> out = new HashMap<>();
+        try (Connection c = ds.getConnection();
+             PreparedStatement ps = c.prepareStatement(sql);
+             ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) {
+                out.put(rs.getString("peer_id"), rs.getInt("degree"));
+            }
+        } catch (SQLException e) {
+            plugin.getLogger().warning("hubLinkDegrees failed: " + e.getMessage());
+        }
+        return out;
+    }
+
+    /** Catalog / known_mvp score: fewer hub links → higher priority (max 100). */
+    public static double sparseHubScore(int degree) {
+        return Math.max(20.0, 100.0 - Math.max(0, degree) * 12.0);
     }
 
     public List<RegistryServer> listAll(long maxAgeMs) {
@@ -1488,6 +1645,13 @@ public final class RegistryDatabase {
     public void saveTravel(String sessionId, String playerUuid, String from, String to, String toPortalId,
                            String portalType, boolean carry, String invB64, Double score, long ttlMs,
                            boolean landingReturn) {
+        saveTravel(sessionId, playerUuid, from, to, toPortalId, portalType, carry, invB64, score, ttlMs,
+                landingReturn, null, 0);
+    }
+
+    public void saveTravel(String sessionId, String playerUuid, String from, String to, String toPortalId,
+                           String portalType, boolean carry, String invB64, Double score, long ttlMs,
+                           boolean landingReturn, String destHost, int destJavaPort) {
         if (!enabled()) {
             return;
         }
@@ -1495,10 +1659,13 @@ public final class RegistryDatabase {
         String sql = """
             INSERT INTO registry_travel(
               session_id, player_uuid, from_server, to_server, to_portal_id, portal_type,
-              carry_inventory, inventory_b64, score, status, created_at, expires_at, landing_return)
-            VALUES (?,?,?,?,?,?,?,?,?,'PENDING',?,?,?)
+              carry_inventory, inventory_b64, score, status, created_at, expires_at, landing_return,
+              dest_host, dest_java_port)
+            VALUES (?,?,?,?,?,?,?,?,?,'PENDING',?,?,?,?,?)
             ON DUPLICATE KEY UPDATE status='PENDING', expires_at=VALUES(expires_at),
-              to_portal_id=VALUES(to_portal_id), landing_return=VALUES(landing_return)
+              to_portal_id=VALUES(to_portal_id), landing_return=VALUES(landing_return),
+              dest_host=COALESCE(VALUES(dest_host), dest_host),
+              dest_java_port=COALESCE(VALUES(dest_java_port), dest_java_port)
             """;
         try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, sessionId);
@@ -1517,9 +1684,131 @@ public final class RegistryDatabase {
             ps.setLong(10, now);
             ps.setLong(11, now + ttlMs);
             ps.setInt(12, landingReturn ? 1 : 0);
+            if (destHost == null || destHost.isBlank() || destJavaPort <= 0) {
+                ps.setNull(13, Types.VARCHAR);
+                ps.setNull(14, Types.INTEGER);
+            } else {
+                ps.setString(13, destHost.trim().toLowerCase(java.util.Locale.ROOT));
+                ps.setInt(14, destJavaPort);
+            }
             ps.executeUpdate();
         } catch (SQLException e) {
             plugin.getLogger().warning("saveTravel: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Hub catalog score is driven by Transfer outcomes (not SLP probes).
+     * success → +transferSuccessScore / success_count++; fail (bounce) → −transferFailScore / fail_count++ / BAD_JOIN.
+     */
+    public void recordTransferOutcome(String host, int javaPort, boolean success, String source) {
+        if (!enabled() || host == null || host.isBlank() || javaPort <= 0) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        String h = host.trim().toLowerCase(java.util.Locale.ROOT);
+        double delta = success ? transferSuccessScore() : -transferFailScore();
+        String st = success ? "OK" : "BAD_JOIN";
+        String src = source == null || source.isBlank() ? (success ? "travel-ok" : "bounce") : source;
+        String sql = """
+            INSERT INTO registry_scanner_hosts(
+              host, java_port, mc_version, version_branch, score, status,
+              bedrock_port, bedrock_protocol, bedrock_version, display_name, source,
+              success_count, fail_count, last_ok_at, last_fail_at, last_seen_at, updated_at)
+            VALUES(?,?,NULL,NULL,?,?,NULL,NULL,NULL,NULL,?,?,?,?,?,?,?)
+            ON DUPLICATE KEY UPDATE
+              status=VALUES(status),
+              source=COALESCE(VALUES(source), source),
+              success_count=success_count + VALUES(success_count),
+              fail_count=fail_count + VALUES(fail_count),
+              last_ok_at=CASE WHEN VALUES(success_count)>0 THEN VALUES(last_ok_at) ELSE last_ok_at END,
+              last_fail_at=CASE WHEN VALUES(fail_count)>0 THEN VALUES(last_fail_at) ELSE last_fail_at END,
+              last_seen_at=GREATEST(COALESCE(last_seen_at,0), COALESCE(VALUES(last_seen_at),0)),
+              score=GREATEST(-100, LEAST(250, COALESCE(score,0) + VALUES(score))),
+              updated_at=VALUES(updated_at)
+            """;
+        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, h);
+            ps.setInt(2, javaPort);
+            ps.setDouble(3, delta);
+            ps.setString(4, st);
+            ps.setString(5, src);
+            ps.setInt(6, success ? 1 : 0);
+            ps.setInt(7, success ? 0 : 1);
+            if (success) {
+                ps.setLong(8, now);
+                ps.setNull(9, Types.BIGINT);
+            } else {
+                ps.setNull(8, Types.BIGINT);
+                ps.setLong(9, now);
+            }
+            ps.setLong(10, now);
+            ps.setLong(11, now);
+            ps.executeUpdate();
+            plugin.getLogger().info("hub transfer-score " + (success ? "OK" : "FAIL")
+                    + " " + h + ":" + javaPort + " delta=" + delta + " src=" + src);
+        } catch (SQLException e) {
+            plugin.getLogger().warning("recordTransferOutcome: " + e.getMessage());
+        }
+    }
+
+    private double transferSuccessScore() {
+        return Math.max(0.0, plugin.getConfig().getDouble("scanner.hub-pool.transfer-success-score", 20.0));
+    }
+
+    private double transferFailScore() {
+        return Math.max(0.0, plugin.getConfig().getDouble("scanner.hub-pool.transfer-fail-score", 40.0));
+    }
+
+    /**
+     * Origin detected bounce-back: player rejoined soon after Transfer — mark hop failed.
+     * Does not require knowing the Minecraft disconnect reason.
+     */
+    public void markTravelBounced(String sessionId) {
+        if (!enabled() || sessionId == null || sessionId.isBlank()) {
+            return;
+        }
+        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement("""
+                UPDATE registry_travel
+                SET status='BOUNCED'
+                WHERE session_id=? AND status IN ('PENDING','ARRIVED')
+                """)) {
+            ps.setString(1, sessionId.trim());
+            int n = ps.executeUpdate();
+            if (n > 0) {
+                plugin.getLogger().info("registry_travel BOUNCED session=" + sessionId);
+            }
+        } catch (SQLException e) {
+            plugin.getLogger().warning("markTravelBounced: " + e.getMessage());
+        }
+    }
+
+    /** Fallback when session id unknown: latest pending hop from this origin for the player. */
+    public void markRecentTravelBounced(String playerUuid, String fromServerId, long withinMs) {
+        if (!enabled() || playerUuid == null || playerUuid.isBlank()) {
+            return;
+        }
+        long cutoff = System.currentTimeMillis() - Math.max(1_000L, withinMs);
+        String from = fromServerId == null ? "" : fromServerId.trim();
+        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement("""
+                UPDATE registry_travel
+                SET status='BOUNCED'
+                WHERE player_uuid=? AND status IN ('PENDING','ARRIVED') AND created_at>=?
+                  AND (?='' OR from_server=?)
+                ORDER BY created_at DESC
+                LIMIT 1
+                """)) {
+            ps.setString(1, playerUuid);
+            ps.setLong(2, cutoff);
+            ps.setString(3, from);
+            ps.setString(4, from);
+            int n = ps.executeUpdate();
+            if (n > 0) {
+                plugin.getLogger().info("registry_travel BOUNCED player=" + playerUuid
+                        + " from=" + (from.isEmpty() ? "?" : from));
+            }
+        } catch (SQLException e) {
+            plugin.getLogger().warning("markRecentTravelBounced: " + e.getMessage());
         }
     }
 
@@ -1550,6 +1839,17 @@ public final class RegistryDatabase {
                 if (!rs.next()) {
                     return Optional.empty();
                 }
+                String destHost = null;
+                int destPort = 0;
+                try {
+                    destHost = rs.getString("dest_host");
+                    Object dp = rs.getObject("dest_java_port");
+                    if (dp != null) {
+                        destPort = ((Number) dp).intValue();
+                    }
+                } catch (SQLException ignored) {
+                    // columns may not exist yet on very old hubs — alterIgnore adds them on boot
+                }
                 RegistryTravel t = new RegistryTravel(
                         rs.getString("session_id"),
                         rs.getString("player_uuid"),
@@ -1566,6 +1866,16 @@ public final class RegistryDatabase {
                         "UPDATE registry_travel SET status='ARRIVED' WHERE session_id=?")) {
                     upd.setString(1, t.sessionId());
                     upd.executeUpdate();
+                }
+                // Successful Transfer → hub catalog score for destination
+                String scoreHost = destHost;
+                int scorePort = destPort;
+                if (scoreHost == null || scoreHost.isBlank() || scorePort <= 0) {
+                    scoreHost = config.publicHost();
+                    scorePort = config.publicPort() > 0 ? config.publicPort() : 25565;
+                }
+                if (scoreHost != null && !scoreHost.isBlank() && scorePort > 0) {
+                    recordTransferOutcome(scoreHost, scorePort, true, "travel-arrived");
                 }
                 return Optional.of(t);
             }
@@ -1684,7 +1994,7 @@ public final class RegistryDatabase {
               motd=COALESCE(VALUES(motd), motd),
               source=COALESCE(VALUES(source), source),
               last_seen_at=GREATEST(COALESCE(last_seen_at,0), COALESCE(VALUES(last_seen_at),0)),
-              score=GREATEST(-100, LEAST(250, COALESCE(score,0) + 1.5)),
+              score=score,
               status=CASE
                 WHEN status='OK' THEN 'OK'
                 WHEN status IN ('DEAD','BAD_JOIN') AND last_fail_at IS NOT NULL
@@ -1755,10 +2065,16 @@ public final class RegistryDatabase {
         String h = host.trim().toLowerCase(java.util.Locale.ROOT);
         String st = status.trim().toUpperCase(java.util.Locale.ROOT);
         boolean ok = "OK".equals(st);
-        boolean fail = "DEAD".equals(st) || "BAD_JOIN".equals(st) || "BAD_PROTO".equals(st) || "NO_GEYSER".equals(st);
-        double delta = scoreDelta != null ? scoreDelta : scannerScoreDelta(st);
-        if (ok && bedrockPort != null && bedrockPort > 0) {
-            delta += 5;
+        // Probe reports refresh liveness only — catalog score comes from Transfer outcomes.
+        boolean probeAffectsScore = plugin.getConfig().getBoolean("scanner.hub-pool.probe-affects-score", false);
+        double delta = 0.0;
+        if (scoreDelta != null) {
+            delta = scoreDelta;
+        } else if (probeAffectsScore) {
+            delta = scannerScoreDelta(st);
+            if (ok && bedrockPort != null && bedrockPort > 0) {
+                delta += 5;
+            }
         }
         String sql = """
             INSERT INTO registry_scanner_hosts(
@@ -1769,16 +2085,24 @@ public final class RegistryDatabase {
             ON DUPLICATE KEY UPDATE
               mc_version=COALESCE(VALUES(mc_version), mc_version),
               version_branch=COALESCE(VALUES(version_branch), version_branch),
-              status=VALUES(status),
+              status=CASE
+                WHEN VALUES(status) IN ('OK','SEEN')
+                  AND status='BAD_JOIN'
+                  AND last_fail_at IS NOT NULL
+                  AND last_fail_at >= (VALUES(updated_at) - 900000)
+                THEN status
+                ELSE VALUES(status)
+              END,
               bedrock_port=COALESCE(VALUES(bedrock_port), bedrock_port),
               bedrock_protocol=COALESCE(VALUES(bedrock_protocol), bedrock_protocol),
               bedrock_version=COALESCE(VALUES(bedrock_version), bedrock_version),
               display_name=COALESCE(VALUES(display_name), display_name),
               source=COALESCE(VALUES(source), source),
-              success_count=success_count + VALUES(success_count),
-              fail_count=fail_count + VALUES(fail_count),
-              last_ok_at=CASE WHEN VALUES(success_count)>0 THEN VALUES(last_ok_at) ELSE last_ok_at END,
-              last_fail_at=CASE WHEN VALUES(fail_count)>0 THEN VALUES(last_fail_at) ELSE last_fail_at END,
+              last_ok_at=CASE WHEN VALUES(status)='OK' THEN VALUES(last_ok_at) ELSE last_ok_at END,
+              last_fail_at=CASE
+                WHEN VALUES(status) IN ('DEAD','BAD_JOIN','BAD_PROTO','NO_GEYSER') THEN VALUES(last_fail_at)
+                ELSE last_fail_at
+              END,
               last_seen_at=GREATEST(COALESCE(last_seen_at,0), COALESCE(VALUES(last_seen_at),0)),
               score=GREATEST(-100, LEAST(250, COALESCE(score,0) + VALUES(score))),
               updated_at=VALUES(updated_at)
@@ -1803,14 +2127,15 @@ public final class RegistryDatabase {
             ps.setString(9, bedrockVersion);
             ps.setString(10, displayName);
             ps.setString(11, source == null || source.isBlank() ? "leaf" : source);
-            ps.setInt(12, ok ? 1 : 0);
-            ps.setInt(13, fail ? 1 : 0);
+            // Probe must not inflate transfer success/fail counters
+            ps.setInt(12, 0);
+            ps.setInt(13, 0);
             if (ok) {
                 ps.setLong(14, now);
             } else {
                 ps.setNull(14, Types.BIGINT);
             }
-            if (fail) {
+            if ("DEAD".equals(st) || "BAD_JOIN".equals(st) || "BAD_PROTO".equals(st) || "NO_GEYSER".equals(st)) {
                 ps.setLong(15, now);
             } else {
                 ps.setNull(15, Types.BIGINT);
@@ -1844,9 +2169,8 @@ public final class RegistryDatabase {
                    online_players, max_players, display_name, motd, source,
                    success_count, fail_count, last_ok_at, last_fail_at, last_seen_at, updated_at
             FROM registry_scanner_hosts
-            WHERE status NOT IN ('BAD_JOIN')
-              AND score >= ?
-              AND NOT (status IN ('DEAD','BAD_JOIN') AND last_fail_at IS NOT NULL AND last_fail_at >= ?)
+            WHERE score >= ?
+              AND NOT (status='DEAD' AND last_fail_at IS NOT NULL AND last_fail_at >= ?)
             """);
         if (!branch.isEmpty()) {
             sql.append(" AND (version_branch IS NULL OR version_branch='' OR version_branch=?)");
@@ -1857,8 +2181,11 @@ public final class RegistryDatabase {
                 sql.append(" AND (bedrock_protocol IS NULL OR bedrock_protocol=0 OR bedrock_protocol=?)");
             }
         }
+        // Soft rank: low transfer-score (incl. BAD_JOIN after bounce) comes later — never hard-excluded.
         sql.append(" ORDER BY CASE WHEN bedrock_port IS NOT NULL AND bedrock_port > 0 THEN 1 ELSE 0 END DESC,")
-                .append(" score DESC, COALESCE(last_ok_at,0) DESC, COALESCE(last_seen_at,0) DESC")
+                .append(" score DESC,")
+                .append(" CASE WHEN status='BAD_JOIN' THEN 1 ELSE 0 END ASC,")
+                .append(" COALESCE(last_ok_at,0) DESC, COALESCE(last_seen_at,0) DESC")
                 .append(" LIMIT ?");
 
         List<ScannerHost> out = new ArrayList<>();

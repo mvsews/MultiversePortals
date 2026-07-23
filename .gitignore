@@ -18,7 +18,6 @@ out/
 # Private / ops — not for the public repo
 deploy/
 PROMO.md
-docs/SCANNERS.md
 probe_*.py
 check_*.py
 check_*.sh

@@ -100,6 +100,16 @@ public final class MvpCommand implements CommandExecutor, TabCompleter {
                     return true;
                 }
                 config.reload();
+                var hub = plugin.scannerHub();
+                if (hub != null) {
+                    try {
+                        hub.stop();
+                        hub.start();
+                    } catch (Throwable t) {
+                        plugin.getLogger().warning("Scanner reload failed (ignored): "
+                                + (t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage()));
+                    }
+                }
                 msg(sender, "<green>Config reloaded.</green>");
             }
             case "info" -> msg(sender, "<gray>Server</gray> <aqua>" + config.serverId()
@@ -366,10 +376,18 @@ public final class MvpCommand implements CommandExecutor, TabCompleter {
             msg(sender, "<red>Ошибка:</red> " + scan.lastError());
         }
         int[] mem = plugin.database().probeCacheStats();
+        int catalogMax = config.scannerCatalogMaxEntries();
+        String catalogCap = catalogMax <= 0 ? "unlimited" : String.valueOf(catalogMax);
         msg(sender, "<gray>Локальный каталог:</gray> всего <aqua>" + mem[0]
-                + "</aqua> · pickable <green>" + (mem.length > 3 ? mem[3] : "?")
+                + "</aqua><gray>/</gray><white>" + catalogCap + "</white>"
+                + " · pickable <green>" + (mem.length > 3 ? mem[3] : "?")
                 + "</green> · ok <white>" + mem[1]
                 + "</white> · dead <red>" + mem[2] + "</red> <gray>(мёртвые остаются)</gray>");
+        if (config.flowBalanceEnabled()) {
+            msg(sender, "<gray>flow-balance:</gray> <green>on</green> <dark_gray>(busy→quiet soft rank)</dark_gray>");
+        } else {
+            msg(sender, "<gray>flow-balance:</gray> <yellow>off</yellow>");
+        }
         int shown = 0;
         for (var e : plugin.database().listTopScored(5)) {
             String label = e.displayName() != null && !e.displayName().isBlank()
@@ -788,6 +806,10 @@ public final class MvpCommand implements CommandExecutor, TabCompleter {
                         + "</white> club=<white>" + json.get("clubSize").getAsInt()
                         + "</white> needBedrock=<white>" + json.get("needBedrock").getAsBoolean()
                         + "</white> requireGeyser=<white>" + json.get("requireGeyser").getAsBoolean()
+                        + "</white> flow=<white>"
+                        + (json.has("flowBalance") && json.get("flowBalance").getAsBoolean() ? "on" : "off")
+                        + "</white> origin=<white>"
+                        + (json.has("originOnline") ? json.get("originOnline").getAsInt() : "?")
                         + "</white>");
                 var arr = json.getAsJsonArray("candidates");
                 int shown = 0;
@@ -799,15 +821,23 @@ public final class MvpCommand implements CommandExecutor, TabCompleter {
                     shown++;
                     String skip = o.has("skip") ? " <red>skip=" + o.get("skip").getAsString() + "</red>" : "";
                     String club = o.get("hasPlugin").getAsBoolean() ? "<green>club</green>" : "<gray>ext</gray>";
+                    int online = o.has("online") ? o.get("online").getAsInt() : -1;
+                    String onlineTxt = online < 0 ? "?" : String.valueOf(online);
+                    String flowTxt = o.has("flowScore")
+                            ? String.format(Locale.ROOT, "%.1f", o.get("flowScore").getAsDouble())
+                            : "?";
                     msg(sender, "<gray>#" + o.get("rank").getAsInt() + "</gray> "
                             + club + " <white>" + o.get("host").getAsString() + ":" + o.get("javaPort").getAsInt()
                             + "</white> <dark_gray>" + o.get("tier").getAsString() + "</dark_gray>"
+                            + " <aqua>on=" + onlineTxt + "</aqua> <yellow>flow=" + flowTxt + "</yellow>"
                             + (o.get("wouldProbe").getAsBoolean() ? " <yellow>probe</yellow>" : skip));
                     if (shown >= 25) {
                         break;
                     }
                 }
-                msg(sender, "<gray>API:</gray> <white>GET "
+                msg(sender, "<gray>Compare:</gray> set <white>scanner.flow-balance.enabled</white> false → "
+                        + "<white>/mvp reload</white> → preview again. "
+                        + "<gray>API:</gray> <white>GET "
                         + config.federationPath() + "/bind/preview?bedrock=0&limit=40</white>");
             });
         });

@@ -56,10 +56,25 @@ public final class MultiversePortalsPlugin extends JavaPlugin {
     private UpdateChecker updateChecker;
     /** True when server.properties was patched / already true but JVM needs restart. */
     private volatile boolean acceptTransfersRestartNeeded;
-    private final MiniMessage mm = MiniMessage.miniMessage();
+    /** Lazy: do not init in constructor — Spigot lacks MiniMessage and would fail before Paper check. */
+    private MiniMessage mm;
 
     @Override
     public void onEnable() {
+        if (!isPaperServer()) {
+            String brand = Bukkit.getName() + " / " + Bukkit.getVersion();
+            getLogger().severe("======================================================");
+            getLogger().severe(" MultiversePortals requires Paper 1.21+");
+            getLogger().severe(" Download: https://papermc.io/downloads/paper");
+            getLogger().severe(" Current server: " + brand);
+            getLogger().severe(" Install Paper, put this jar in plugins/, then restart.");
+            getLogger().severe(" Spigot / CraftBukkit / Vanilla are not supported.");
+            getLogger().severe("======================================================");
+            Bukkit.getPluginManager().disablePlugin(this);
+            return;
+        }
+
+        this.mm = MiniMessage.miniMessage();
         saveDefaultConfig();
         this.pluginConfig = new PluginConfig(this);
         var messages = new io.multiverseportals.i18n.Messages(this);
@@ -398,5 +413,45 @@ public final class MultiversePortalsPlugin extends JavaPlugin {
             return;
         }
         player.sendMessage(mm.deserialize(pluginConfig.prefix() + pluginConfig.message("accept-transfers-restart")));
+    }
+
+    /**
+     * Paper (and forks: Purpur, Pufferfish, Folia) expose the Transfer API we need.
+     * Spigot / CraftBukkit / Vanilla jar → refuse to load with a clear install hint.
+     * Do not treat {@code Player#transfer} alone as Paper — Spigot may expose it without Adventure/Paper APIs.
+     */
+    private static boolean isPaperServer() {
+        String name = Bukkit.getName();
+        if (name != null) {
+            String n = name.toLowerCase(java.util.Locale.ROOT);
+            if (n.contains("paper") || n.contains("purpur") || n.contains("folia")
+                    || n.contains("pufferfish") || n.contains("leaves")) {
+                return true;
+            }
+        }
+        String ver = Bukkit.getVersion();
+        if (ver != null) {
+            String v = ver.toLowerCase(java.util.Locale.ROOT);
+            if (v.contains("paper") || v.contains("purpur") || v.contains("folia")
+                    || v.contains("pufferfish") || v.contains("leaves")) {
+                return true;
+            }
+        }
+        try {
+            Class.forName("io.papermc.paper.configuration.Configuration");
+            return true;
+        } catch (ClassNotFoundException ignored) {
+        }
+        try {
+            Class.forName("com.destroystokyo.paper.PaperConfig");
+            return true;
+        } catch (ClassNotFoundException ignored) {
+        }
+        try {
+            Class.forName("io.papermc.paper.threadedregions.RegionizedServer");
+            return true;
+        } catch (ClassNotFoundException ignored) {
+        }
+        return false;
     }
 }

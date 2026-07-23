@@ -176,7 +176,7 @@ accept-transfers=true
 
 Without this, Minecraft **rejects** Transfer joins — guests from other worlds cannot arrive. The plugin then stays **local-only** (wool, Pair / `[To]` by IP) and is **not listed** on mp.mvse.ws.
 
-Transfer address comes from `server-ip` / `server-port` automatically. Set `public-host` in `config.yml` only if players join via a different domain. Check: `/mvp settings`.
+Transfer address comes from `server-ip` / `server-port` automatically. Set `public-host` / `public-port` in `config.yml` if players join via a **different domain or port** (Docker `-p 25566:25565`, NAT, proxy) — otherwise the catalog gets the internal `25565` / LAN IP and you stay local-only. Check: `/mvp settings`.
 
 ## Common issues
 
@@ -186,7 +186,7 @@ Transfer address comes from `server-ip` / `server-port` automatically. Set `publ
 | No compatible servers | Wait / other client version; admin: `/mvp scanner` |
 | Could not find a live server | Step on the plate again |
 | Pair portal broken | Relink with a `[Pair]` code |
-| Server not in catalog | `accept-transfers=true`, public IP/domain, not LAN; see `/mvp settings` → catalog |
+| Server not in catalog | `accept-transfers=true`, public IP/domain (not Docker `172.*`), **`public-port` = external port**; see `/mvp settings` → catalog |
 
 ## Player commands
 

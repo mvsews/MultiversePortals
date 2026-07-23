@@ -52,7 +52,7 @@ bedrock-dest-java-only: "<red>此服务器仅支持 Java，不支持你的版本
 bedrock-version-mismatch: "<yellow>你的 Bedrock</yellow> <white>%version%</white> <gray>(协议 %proto%)</gray><yellow> — 目标协议不同。</yellow> <gray>正在寻找其他服务器…</gray>"
 bedrock-bound-mismatch: "<red>此传送门的 Geyser Bedrock 协议与你的不匹配。</red> <gray>你的：</gray> <white>%version%</white> <gray>(%proto%)</gray><gray>。拆掉告示牌重建，或用 Java 进入。</gray>"
 dest-unstable: "<yellow>对侧传送门未激活。</yellow> <gray>链接保留 — 对端恢复后即可再次使用。</gray>"
-bounce-back: "<yellow>对侧传送门未激活</yellow> <white>(%host%)</white><yellow>。</yellow> <gray>链接保留 — 请稍后再试。</gray>"
+bounce-back: "<green>欢迎回来！</green> <yellow>未能进入</yellow> <white>%label%</white><yellow> — 已降低该服信誉。</yellow> <gray>传送门链接保留。</gray>"
 going-to: "<gray>→ </gray><aqua>%host%:%port%</aqua>"
 charge-left-plate: "<red>已取消 — 请站在压力板上</red>"
 charge-countdown: "<aqua>%dest%</aqua> <dark_gray>·</dark_gray> <white>%sec%s</white>"

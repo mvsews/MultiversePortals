@@ -323,7 +323,8 @@ public final class TravelService {
             effects.signalDepart(player);
         }
         pendingTransfers.put(player.getUniqueId(), new PendingTransfer(
-                result.host(), result.javaPort(), session.portal.id(), System.currentTimeMillis()));
+                result.host(), result.javaPort(), session.portal.id(), System.currentTimeMillis(), null,
+                pendingLabel(session.portal, result.host())));
         depart(player, session.portal, result.host(), result.port(), result.serverId(),
                 result.toPortalId(), result.type(), result.returnCapable());
     }
@@ -422,20 +423,79 @@ public final class TravelService {
             return;
         }
         long age = System.currentTimeMillis() - p.atMs;
-        if (age > config.scannerBounceBackSeconds() * 1000L) {
+        long windowMs = config.scannerBounceBackSeconds() * 1000L;
+        if (age > windowMs) {
             return;
         }
         if (config.scannerMemoryEnabled()) {
             db.recordProbe(p.host, p.javaPort, Database.ProbeStatus.BAD_JOIN,
                     null, null, null, null, null, null);
         }
+        reportBounceFailure(player, p, age);
         plugin.getLogger().warning("Bounce-back from " + p.host + ":" + p.javaPort
                 + " after " + (age / 1000) + "s — blacklisted for new binds (sticky portal kept)");
         if (p.portalId != null && plugin.portalBindService() != null) {
             plugin.portalBindService().rebindAfterBounce(p.portalId, p.host, p.javaPort);
         }
         player.sendMessage(mm.deserialize(config.prefix(player) + config.message(player, "bounce-back")
-                .replace("%host%", p.host)));
+                .replace("%host%", p.host == null ? "?" : p.host)
+                .replace("%label%", bounceDisplayLabel(p))
+                .replace("%port%", String.valueOf(p.javaPort))
+                .replace("%delta%", String.valueOf((int) Math.round(
+                        Math.max(0.0, plugin.getConfig().getDouble("scanner.hub-pool.transfer-fail-score", 40.0)))))));
+    }
+
+    private static String bounceDisplayLabel(PendingTransfer p) {
+        if (p.label != null && !p.label.isBlank()) {
+            return p.label.trim();
+        }
+        return p.host == null || p.host.isBlank() ? "?" : p.host;
+    }
+
+    private static String pendingLabel(Portal portal, String host) {
+        if (portal != null) {
+            String v = portal.boundVersion();
+            if (v != null && !v.isBlank()) {
+                return v.trim();
+            }
+        }
+        return host == null ? "?" : host;
+    }
+
+    /**
+     * Tell the central hub: transfer failed (player rejoined origin within bounce window).
+     * We cannot read the dest kick reason — only this heuristic.
+     */
+    private void reportBounceFailure(Player player, PendingTransfer p, long ageMs) {
+        final String sessionId = p.sessionId;
+        final String playerUuid = player.getUniqueId().toString();
+        final String fromServer = config.serverId();
+        final long withinMs = Math.max(ageMs + 5_000L, config.scannerBounceBackSeconds() * 1000L);
+
+        // Hub with MySQL: Transfer-fail score + mark travel directly (no HTTP double-count).
+        if (registry != null && registry.enabled()) {
+            Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+                try {
+                    registry.recordTransferOutcome(p.host, p.javaPort, false, "bounce");
+                    if (sessionId != null && !sessionId.isBlank()) {
+                        registry.markTravelBounced(sessionId);
+                    } else {
+                        registry.markRecentTravelBounced(playerUuid, fromServer, withinMs);
+                    }
+                } catch (Throwable t) {
+                    plugin.getLogger().warning("hub bounce report: "
+                            + (t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage()));
+                }
+            });
+            return;
+        }
+
+        // Leaf: HTTPS report into central scanner pool (status=BAD_JOIN).
+        if (plugin.scannerPool() != null) {
+            plugin.scannerPool().reportProbeAsync(
+                    p.host, p.javaPort, Database.ProbeStatus.BAD_JOIN,
+                    null, null, null, null, null);
+        }
     }
 
     /** Single pass: try current candidate pool (no infinite refresh). */
@@ -617,7 +677,7 @@ public final class TravelService {
 
         // MVP destination: land at a return portal so the player can step back home.
         // Works with MySQL registry OR open-network club (known_mvp / trusted peers) when
-        // registry.enabled=false on leaf servers like IT.
+        // registry.enabled=false on normal (non-hub) servers.
         String destServerId = "bound:" + host;
         String toPortalId = portal.boundDestPortalId();
         boolean returnCapable = false;
@@ -714,11 +774,18 @@ public final class TravelService {
             }
         }
         if (resp.isEmpty() && federationUrl != null && !federationUrl.isBlank()) {
-            // Short timeout: non-MVP destinations must not stall transfer for 10s.
+            // Fail-open: never stall Transfer on a dead hub / unreachable dest federation.
             boolean guessed = destServerId != null && destServerId.startsWith("bound:");
-            resp = guessed
-                    ? peerClient.postCatalog(federationUrl, "/travel/offer", offer, java.time.Duration.ofSeconds(2))
-                    : peerClient.postCatalog(federationUrl, "/travel/offer", offer);
+            boolean hubUrl = peerClient.isHubCoolingDown(federationUrl)
+                    || (federationUrl.toLowerCase(java.util.Locale.ROOT).contains("mp.mvse.ws"));
+            if (peerClient.isHubCoolingDown(federationUrl)) {
+                plugin.getLogger().fine("Skip travel offer — hub cooling down: " + federationUrl);
+            } else {
+                java.time.Duration to = guessed || hubUrl
+                        ? java.time.Duration.ofSeconds(2)
+                        : java.time.Duration.ofSeconds(4);
+                resp = peerClient.postCatalog(federationUrl, "/travel/offer", offer, to);
+            }
         }
         if (resp.isEmpty()) {
             plugin.getLogger().info("Travel offer failed for dest=" + destServerId
@@ -775,7 +842,8 @@ public final class TravelService {
                 }
                 java.util.function.Consumer<ResolveResult> go = dest -> {
                     pendingTransfers.put(player.getUniqueId(), new PendingTransfer(
-                            dest.host(), dest.javaPort(), portal.id(), System.currentTimeMillis()));
+                            dest.host(), dest.javaPort(), portal.id(), System.currentTimeMillis(), null,
+                            pendingLabel(portal, dest.host())));
                     depart(player, portal, dest.host(), dest.port(), dest.serverId(),
                             dest.toPortalId(), dest.type(), dest.returnCapable());
                 };
@@ -986,6 +1054,18 @@ public final class TravelService {
         String sessionId = UUID.randomUUID().toString();
         String invB64 = exportItems ? Base64.getEncoder().encodeToString(blob) : null;
 
+        // Track for bounce-back detection (player rejoins origin within window).
+        PendingTransfer prev = pendingTransfers.get(player.getUniqueId());
+        pendingTransfers.put(player.getUniqueId(), new PendingTransfer(
+                host,
+                // java port for memory key — prefer sticky java port from previous pending if set
+                prev != null && prev.javaPort > 0 ? prev.javaPort : port,
+                portal.id(),
+                System.currentTimeMillis(),
+                sessionId,
+                pendingLabel(portal, host)
+        ));
+
         if (registry != null && registry.enabled()) {
             registry.saveTravel(
                     sessionId,
@@ -998,7 +1078,9 @@ public final class TravelService {
                     invB64,
                     score,
                     config.sessionTtlSeconds() * 1000L,
-                    returnCapable
+                    returnCapable,
+                    host,
+                    prev != null && prev.javaPort > 0 ? prev.javaPort : port
             );
         }
 
@@ -1253,8 +1335,11 @@ public final class TravelService {
             if (hub == null || hub.isBlank() || "none".equalsIgnoreCase(hub)) {
                 continue;
             }
+            if (peerClient.isHubCoolingDown(hub)) {
+                continue;
+            }
             Optional<JsonObject> resp = peerClient.postCatalog(
-                    hub, "/travel/claim", body, java.time.Duration.ofSeconds(4));
+                    hub, "/travel/claim", body, java.time.Duration.ofSeconds(2));
             if (resp.isEmpty()) {
                 continue;
             }
@@ -1626,7 +1711,14 @@ public final class TravelService {
         }
     }
 
-    private record PendingTransfer(String host, int javaPort, String portalId, long atMs) {}
+    private record PendingTransfer(
+            String host,
+            int javaPort,
+            String portalId,
+            long atMs,
+            String sessionId,
+            String label
+    ) {}
 
     private record ResolveResult(
             boolean ok,

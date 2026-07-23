@@ -9,9 +9,9 @@ registry:
   enabled: false          # leave OFF
 
 server:
-  public-host: ""         # auto from server-ip
-  public-port: 0          # auto from server-port
-  list-publicly: auto     # LAN / no accept-transfers → local-only (not listed)
+  public-host: ""         # auto from server-ip; set public IP/domain behind Docker/NAT
+  public-port: 0          # auto from server-port; set host publish port if mapped (e.g. 25566)
+  list-publicly: auto     # LAN / Docker bridge / no accept-transfers → local-only (not listed)
 
 catalog-share:
   enabled: true
@@ -19,6 +19,8 @@ catalog-share:
 ```
 
 Public listing happens over **HTTPS** only when the address looks public and Transfer inbound is allowed. Otherwise the plugin stays **local-only** (wool / Pair / `[To]` by IP). The hub also skips private or unreachable announces.
+
+If you publish Docker as `-p 25566:25565`, set `public-port: 25566` and a non-private `public-host` — auto resolve would advertise container `25565` / `172.17.*` and stay off the map. Details: [TECHNICAL.md](TECHNICAL.md#public-address-resolve).
 
 When your portals bind or change, their edges are pushed to the hub so the [live map](https://mp.mvse.ws/) shows connectivity.
 

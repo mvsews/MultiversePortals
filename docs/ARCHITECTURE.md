@@ -18,10 +18,11 @@ Flow:
 3. Player writes `[Multi]` / `[To]` / `[Pair]` on a sign → portal saved locally (Pair invite via hub/peers as needed)
 4. When a portal **binds** (or is created/deleted), the server pushes its portal edges to the hub so the [live map](https://mp.mvse.ws/) updates
 5. Pressure plate → travel session → `player.transfer(host, port)` (Java→Java / Bedrock→Bedrock on the same host when Geyser is present)
-6. Destination lands the player **on the return portal plate** when known (else any network portal, else spawn). Leaf hosts without local federation **claim** pending landings from the hub (`POST /travel/claim`)
+6. Destination lands the player **on the return portal plate** when known (else any network portal, else spawn). Leaf hosts without local federation **claim** pending landings from the hub (`POST /travel/claim`) when reachable; otherwise join continues normally (fail-open)
 
-Bind / MULTI target order: **network club (MVP peers with the plugin) → public scanners**; with Bedrock, confirmed-Geyser hosts rise within each tier.  
-A **button** next to a random `[Multi]` sign cycles the sticky bind (club first). Nearby Random portals avoid the same destination when another target exists (`scanner.avoid-duplicate-radius`).
+Bind / MULTI target order: **network club (MVP peers with the plugin) → public scanners**; with Bedrock, confirmed-Geyser hosts rise within each tier. Within a tier, **flow-balance** soft-ranks by origin vs dest online (busy→quiet; quiet→moderate band; mega soft penalty). *(Still planned: inter-server ping scoring and **mod/modpack matching** — see [TECHNICAL.md](TECHNICAL.md#planned).)*  
+A **button** next to a random `[Multi]` sign cycles the sticky bind (club first). Nearby Random portals avoid the same destination when another target exists (`scanner.avoid-duplicate-radius`).  
+If the official catalog hub is down, club gossip pauses and **public scanners + local SQLite** supply Multi targets; hub cooldown does not block Travel.
 
 Inventory defaults OFF for open network (`open-network.default-*-inventory`).
 

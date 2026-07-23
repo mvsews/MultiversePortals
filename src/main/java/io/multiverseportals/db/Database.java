@@ -323,7 +323,9 @@ public final class Database {
             String displayName,
             String mcVersion,
             long lastSeenAt,
-            String source
+            String source,
+            int javaOnline,
+            int javaMax
     ) {
         public TrustedPeer toPeer() {
             String label = displayName != null && !displayName.isBlank() ? displayName : host;
@@ -340,6 +342,11 @@ public final class Database {
 
         public boolean hasGeyser() {
             return bedrockPort > 0;
+        }
+
+        /** -1 if unknown. */
+        public int knownOnline() {
+            return javaOnline >= 0 ? javaOnline : -1;
         }
     }
 
@@ -546,7 +553,10 @@ public final class Database {
               mc_version=COALESCE(excluded.mc_version, known_mvp_servers.mc_version),
               bedrock_port=CASE WHEN excluded.bedrock_port>0 THEN excluded.bedrock_port ELSE known_mvp_servers.bedrock_port END,
               last_seen_at=MAX(excluded.last_seen_at, known_mvp_servers.last_seen_at),
-              score=MAX(excluded.score, known_mvp_servers.score),
+              score=CASE
+                WHEN excluded.source IN ('registry','hub') THEN excluded.score
+                ELSE MAX(excluded.score, known_mvp_servers.score)
+              END,
               source=excluded.source
             """;
         try (Connection c = connection(); PreparedStatement ps = c.prepareStatement(sql)) {
@@ -561,6 +571,21 @@ public final class Database {
             ps.setDouble(9, score);
             ps.setString(10, source == null ? "gossip" : source);
             ps.executeUpdate();
+            // Same public host:port = one peer (serverId/name may change between reinstalls).
+            try (PreparedStatement del = c.prepareStatement("""
+                    DELETE FROM known_mvp_servers
+                    WHERE lower(public_host)=lower(?) AND public_port=? AND server_id<>?
+                    """)) {
+                del.setString(1, publicHost.trim());
+                del.setInt(2, publicPort);
+                del.setString(3, serverId.trim());
+                int n = del.executeUpdate();
+                if (n > 0) {
+                    plugin.getLogger().info("known_mvp: dropped " + n
+                            + " duplicate(s) for " + publicHost.trim() + ":" + publicPort
+                            + " (kept " + serverId.trim() + ")");
+                }
+            }
         } catch (SQLException e) {
             plugin.getLogger().warning("known_mvp upsert failed: " + e.getMessage());
         }
@@ -1174,8 +1199,8 @@ public final class Database {
     }
 
     /**
-     * @param hardOnly if true, only DEAD/BAD_JOIN count (not NO_GEYSER/FULL/BAD_PROTO) —
-     *                 used by bind-on-create so a soft miss doesn't poison the whole pool.
+     * @param hardOnly if true, only DEAD counts (not NO_GEYSER/FULL/BAD_PROTO/BAD_JOIN) —
+     *                 BAD_JOIN is soft-ranked by score, not hard-skipped for bind.
      */
     public boolean isRecentlyFailed(String host, int javaPort, long deadTtlMs, boolean hardOnly) {
         if (host == null || host.isBlank() || deadTtlMs <= 0) {
@@ -1202,7 +1227,7 @@ public final class Database {
                 if (!hardOnly) {
                     return true;
                 }
-                return "DEAD".equals(st) || "BAD_JOIN".equals(st);
+                return "DEAD".equals(st);
             }
         } catch (SQLException e) {
             return false;
@@ -1236,7 +1261,14 @@ public final class Database {
               last_transfer_at, score, display_name, source, last_seen_at)
             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,?,NULL,NULL)
             ON CONFLICT(host, java_port) DO UPDATE SET
-              status=excluded.status,
+              status=CASE
+                WHEN probe_cache.status='BAD_JOIN'
+                  AND probe_cache.last_fail_at IS NOT NULL
+                  AND probe_cache.last_fail_at >= (excluded.last_checked_at - 900000)
+                  AND excluded.status IN ('OK','SEEN')
+                THEN probe_cache.status
+                ELSE excluded.status
+              END,
               java_online=COALESCE(excluded.java_online, probe_cache.java_online),
               java_max=COALESCE(excluded.java_max, probe_cache.java_max),
               bedrock_port=COALESCE(excluded.bedrock_port, probe_cache.bedrock_port),
@@ -1389,6 +1421,105 @@ public final class Database {
         return n;
     }
 
+    /** Prune local probe_cache using plugin catalog limits (no-op if max-entries is 0). */
+    public void pruneLocalCatalogIfNeeded(io.multiverseportals.config.PluginConfig config) {
+        if (config == null) {
+            return;
+        }
+        try {
+            pruneProbeCache(
+                    config.scannerCatalogMaxEntries(),
+                    config.scannerCatalogPruneBatch(),
+                    config.scannerCatalogProtectOkMinScore());
+        } catch (Throwable t) {
+            plugin.getLogger().warning("probe_cache prune skipped: "
+                    + (t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage()));
+        }
+    }
+
+    /**
+     * Cap local SQLite probe_cache size. Does not touch hub MySQL.
+     * {@code maxEntries <= 0} means unlimited (no prune).
+     *
+     * @return number of rows deleted
+     */
+    public int pruneProbeCache(int maxEntries, int pruneBatch, double protectOkMinScore) {
+        if (maxEntries <= 0) {
+            return 0;
+        }
+        int total;
+        try {
+            total = probeCacheStats()[0];
+        } catch (Exception e) {
+            return 0;
+        }
+        if (total <= maxEntries) {
+            return 0;
+        }
+        int over = total - maxEntries;
+        int limit = Math.min(Math.max(1, pruneBatch), over);
+        // Evict worst first: DEAD/BAD_JOIN, then low-score / unprotected OK, oldest seen
+        String sql = """
+            DELETE FROM probe_cache WHERE rowid IN (
+              SELECT rowid FROM probe_cache
+              ORDER BY
+                CASE
+                  WHEN status IN ('DEAD','BAD_JOIN') THEN 0
+                  WHEN status IN ('NO_GEYSER','SEEN','FULL','BAD_PROTO') THEN 1
+                  WHEN status='OK' AND COALESCE(score,0) < ? THEN 2
+                  ELSE 3
+                END ASC,
+                COALESCE(score, 0) ASC,
+                COALESCE(last_fail_at, 0) ASC,
+                COALESCE(last_seen_at, 0) ASC,
+                COALESCE(last_checked_at, 0) ASC
+              LIMIT ?
+            )
+            """;
+        try (Connection c = connection(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setDouble(1, protectOkMinScore);
+            ps.setInt(2, limit);
+            int deleted = ps.executeUpdate();
+            if (deleted > 0) {
+                plugin.getLogger().info("probe_cache prune: deleted " + deleted
+                        + " (total was " + total + ", max=" + maxEntries + ")");
+            }
+            return deleted;
+        } catch (SQLException e) {
+            plugin.getLogger().warning("probe_cache prune failed: " + e.getMessage());
+            return 0;
+        }
+    }
+
+    /** host:port → java_online (-1 if unknown). */
+    public java.util.Map<String, Integer> probeOnlineMap(int limit) {
+        java.util.Map<String, Integer> map = new java.util.HashMap<>();
+        String sql = """
+            SELECT host, java_port, java_online FROM probe_cache
+            ORDER BY COALESCE(last_seen_at, 0) DESC
+            LIMIT ?
+            """;
+        try (Connection c = readConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setInt(1, Math.max(100, limit));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    String host = rs.getString("host");
+                    int port = rs.getInt("java_port");
+                    int online = rs.getInt("java_online");
+                    if (rs.wasNull()) {
+                        online = -1;
+                    }
+                    if (host != null && !host.isBlank()) {
+                        map.put(host.toLowerCase(java.util.Locale.ROOT) + ":" + port, online);
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            plugin.getLogger().warning("probeOnlineMap failed: " + e.getMessage());
+        }
+        return map;
+    }
+
     /**
      * Candidates for portals/bind: ordered by local score. Hard-dead within TTL are skipped
      * for selection but remain in the table.
@@ -1400,7 +1531,7 @@ public final class Database {
         String sql = """
             SELECT host, java_port, status, bedrock_port, bedrock_protocol, bedrock_version,
                    success_count, fail_count, last_ok_at, last_fail_at, last_checked_at,
-                   score, display_name, mc_version, last_seen_at, source
+                   score, display_name, mc_version, last_seen_at, source, java_online, java_max
             FROM probe_cache
             ORDER BY score DESC, COALESCE(last_seen_at, 0) DESC, COALESCE(last_ok_at, 0) DESC
             LIMIT ?
@@ -1437,7 +1568,7 @@ public final class Database {
         String sql = """
             SELECT host, java_port, status, bedrock_port, bedrock_protocol, bedrock_version,
                    success_count, fail_count, last_ok_at, last_fail_at, last_checked_at,
-                   score, display_name, mc_version, last_seen_at, source
+                   score, display_name, mc_version, last_seen_at, source, java_online, java_max
             FROM probe_cache
             ORDER BY score DESC
             LIMIT ?
@@ -1477,7 +1608,8 @@ public final class Database {
     }
 
     /**
-     * Bind candidates: score order, known Geyser first, skip BAD_JOIN forever.
+     * Bind candidates: score order, known Geyser first.
+     * BAD_JOIN stays in the pool but ranks later (soft penalty via score).
      */
     public List<ProbeEntry> listBindCandidates(String versionBranch, int limit, long deadTtlMs) {
         List<ProbeEntry> out = new ArrayList<>();
@@ -1487,11 +1619,11 @@ public final class Database {
         String sql = """
             SELECT host, java_port, status, bedrock_port, bedrock_protocol, bedrock_version,
                    success_count, fail_count, last_ok_at, last_fail_at, last_checked_at,
-                   score, display_name, mc_version, last_seen_at, source
+                   score, display_name, mc_version, last_seen_at, source, java_online, java_max
             FROM probe_cache
-            WHERE status != 'BAD_JOIN'
             ORDER BY CASE WHEN bedrock_port IS NOT NULL AND bedrock_port > 0 THEN 1 ELSE 0 END DESC,
                      score DESC,
+                     CASE WHEN status='BAD_JOIN' THEN 1 ELSE 0 END ASC,
                      COALESCE(last_ok_at, 0) DESC,
                      COALESCE(last_seen_at, 0) DESC
             LIMIT ?
@@ -1565,7 +1697,7 @@ public final class Database {
         String sql = """
             SELECT host, java_port, status, bedrock_port, bedrock_protocol, bedrock_version,
                    success_count, fail_count, last_ok_at, last_fail_at, last_checked_at,
-                   score, display_name, mc_version, last_seen_at, source
+                   score, display_name, mc_version, last_seen_at, source, java_online, java_max
             FROM probe_cache
             WHERE status='OK' AND success_count>=? AND last_ok_at IS NOT NULL AND last_ok_at>=?
             ORDER BY score DESC, COALESCE(last_transfer_at, 0) DESC, last_ok_at DESC
@@ -1651,6 +1783,8 @@ public final class Database {
         String mcVer = null;
         String source = null;
         long seenAt = 0;
+        int javaOnline = -1;
+        int javaMax = -1;
         try {
             display = rs.getString("display_name");
             mcVer = rs.getString("mc_version");
@@ -1658,6 +1792,17 @@ public final class Database {
             seenAt = rs.getLong("last_seen_at");
             if (rs.wasNull()) {
                 seenAt = 0;
+            }
+        } catch (SQLException ignored) {
+        }
+        try {
+            javaOnline = rs.getInt("java_online");
+            if (rs.wasNull()) {
+                javaOnline = -1;
+            }
+            javaMax = rs.getInt("java_max");
+            if (rs.wasNull()) {
+                javaMax = -1;
             }
         } catch (SQLException ignored) {
         }
@@ -1677,7 +1822,9 @@ public final class Database {
                 display,
                 mcVer,
                 seenAt,
-                source
+                source,
+                javaOnline,
+                javaMax
         );
     }
 

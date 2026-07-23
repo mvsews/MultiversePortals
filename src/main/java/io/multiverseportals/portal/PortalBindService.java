@@ -9,6 +9,7 @@ import io.multiverseportals.model.Portal;
 import io.multiverseportals.model.PortalStatus;
 import io.multiverseportals.model.PortalType;
 import io.multiverseportals.model.TrustedPeer;
+import io.multiverseportals.scanner.FlowBalance;
 import io.multiverseportals.scanner.ScannedServer;
 import io.multiverseportals.scanner.ServerProbe;
 import net.kyori.adventure.text.minimessage.MiniMessage;
@@ -26,14 +27,17 @@ import com.google.gson.JsonObject;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Random;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * On MULTI portal create: search a live compatible host (Java + preferably Geyser),
@@ -50,6 +54,8 @@ public final class PortalBindService {
     /** Howl's dial: cooldown per portal id so players can't spam rebinds. */
     private final Map<String, Long> dialCooldownUntil = new ConcurrentHashMap<>();
     private static final long DIAL_COOLDOWN_MS = 3_000L;
+    /** Hosts recently chosen by dial / Multi bind — skipped for {@code dial-recent-exclude-seconds}. */
+    private final Map<String, Long> recentBindUntil = new ConcurrentHashMap<>();
 
     public PortalBindService(MultiversePortalsPlugin plugin, Database db, PluginConfig config) {
         this.plugin = plugin;
@@ -91,6 +97,10 @@ public final class PortalBindService {
         List<TrustedPeer> peers = collectCandidates(seed);
         orderBindPeers(peers, preferDual, shuffle);
         Set<String> geyserKeys = knownGeyserKeySet(preferDual);
+        FlowBalance.Weights flowW = config.flowBalanceWeights();
+        int originOnline = Bukkit.getOnlinePlayers().size();
+        Map<String, Integer> onlineMap = db.probeOnlineMap(
+                Math.max(500, peers.size() + 100));
 
         int maxAttempts = Math.max(1, config.scannerMaxAttempts());
         int probeSlots = 0;
@@ -104,12 +114,13 @@ public final class PortalBindService {
             String skip = null;
             if (isOwnPublicHost(peer.publicHost())) {
                 skip = "own-host";
+            } else if (recentExcludeHosts().contains(
+                    peer.publicHost() == null ? "" : peer.publicHost().toLowerCase(Locale.ROOT))) {
+                skip = "recently-bound";
             } else if (!peer.hasPlugin() && config.scannerMemoryEnabled() && config.scannerDeadTtlMs() > 0
                     && db.isRecentlyFailed(peer.publicHost(), peer.publicPort(),
                     config.scannerDeadTtlMs(), true)) {
                 skip = "recently-failed-hard";
-            } else if (!peer.hasPlugin() && db.isBadJoinHost(peer.publicHost(), peer.publicPort())) {
-                skip = "bad-join";
             } else if (nearbyPortalPointsTo(seed, peer.publicHost())) {
                 skip = "nearby-duplicate";
             } else if (probeSlots >= maxAttempts) {
@@ -125,6 +136,9 @@ public final class PortalBindService {
             String tier = peer.hasPlugin()
                     ? (geyser ? "club-geyser" : "club")
                     : (geyser ? "ext-geyser" : "ext");
+            int destOnline = onlineMap.getOrDefault(
+                    keyHost(peer.publicHost(), peer.publicPort()), -1);
+            double flowScore = FlowBalance.score(originOnline, destOnline, flowW);
 
             JsonObject o = new JsonObject();
             o.addProperty("rank", rank);
@@ -134,6 +148,8 @@ public final class PortalBindService {
             o.addProperty("label", peer.displayName() == null ? "" : peer.displayName());
             o.addProperty("hasPlugin", peer.hasPlugin());
             o.addProperty("tier", tier);
+            o.addProperty("online", destOnline);
+            o.addProperty("flowScore", Math.round(flowScore * 10.0) / 10.0);
             o.addProperty("wouldProbe", wouldProbe);
             if (skip != null) {
                 o.addProperty("skip", skip);
@@ -153,9 +169,12 @@ public final class PortalBindService {
         out.addProperty("poolSize", peers.size());
         out.addProperty("clubSize", club);
         out.addProperty("shuffle", shuffle);
+        out.addProperty("flowBalance", flowW.enabled());
+        out.addProperty("originOnline", originOnline);
         out.addProperty("portalId", seed.id());
         out.addProperty("note", "Order matches [Multi] bind; wouldProbe marks the first maxAttempts "
-                + "candidates that are not skipped. Live SLP/RakNet probes are not run here.");
+                + "candidates that are not skipped. online/flowScore use probe_cache (not live SLP). "
+                + "Toggle scanner.flow-balance.enabled and /mvp reload to compare rankings.");
         out.add("candidates", arr);
         return out;
     }
@@ -178,7 +197,8 @@ public final class PortalBindService {
 
     /**
      * Howl's Moving Castle dial: button on a random [Multi] portal switches the sticky destination.
-     * Club MVP peers first (next after current), else a fresh random search excluding the current host.
+     * Skips the current host and hosts chosen in the last {@code dial-recent-exclude-seconds}
+     * so the dial does not keep flipping hub ↔ one peer.
      */
     public void cycleBind(Player player, Portal portal) {
         if (player == null || portal == null || portal.type() != PortalType.MULTI) {
@@ -205,20 +225,6 @@ public final class PortalBindService {
         dialCooldownUntil.put(portal.id(), now + DIAL_COOLDOWN_MS);
 
         String currentHost = portal.boundHost();
-        List<TrustedPeer> club = collectClubPeers(portal);
-        club.sort(Comparator.comparing(
-                p -> (p.publicHost() == null ? "" : p.publicHost().toLowerCase(Locale.ROOT))
-                        + ":" + p.publicPort()));
-
-        int startIdx = 0;
-        if (currentHost != null && !currentHost.isBlank() && !club.isEmpty()) {
-            for (int i = 0; i < club.size(); i++) {
-                if (currentHost.equalsIgnoreCase(club.get(i).publicHost())) {
-                    startIdx = (i + 1) % club.size();
-                    break;
-                }
-            }
-        }
 
         player.sendMessage(mm.deserialize(config.prefix(player) + config.message(player, "dial-searching")));
 
@@ -243,47 +249,65 @@ public final class PortalBindService {
         int bedProto = needBedrock ? BedrockPlayers.protocolVersion(player).orElse(0) : 0;
         String bedVer = needBedrock ? BedrockPlayers.versionString(player) : "";
         final String portalId = portal.id();
-        final String excludeHost = currentHost;
-        final int start = startIdx;
-        final List<TrustedPeer> clubCopy = List.copyOf(club);
+        final Set<String> exclude = new HashSet<>(recentExcludeHosts());
+        if (currentHost != null && !currentHost.isBlank()) {
+            exclude.add(currentHost.toLowerCase(Locale.ROOT));
+        }
 
         Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
             BoundDest dest = null;
             try {
-                for (int n = 0; n < clubCopy.size(); n++) {
-                    TrustedPeer peer = clubCopy.get((start + n) % clubCopy.size());
+                refreshHubBeforeBind(player);
+                // Re-read club after hub/catalog pull — new MVP peers may have appeared.
+                List<TrustedPeer> freshClub = new ArrayList<>(collectClubPeers(
+                        db.findPortal(portalId).orElse(portal)));
+                Collections.shuffle(freshClub, ThreadLocalRandom.current());
+                for (TrustedPeer peer : freshClub) {
                     if (peer.publicHost() == null || peer.publicHost().isBlank()) {
                         continue;
                     }
-                    if (excludeHost != null && excludeHost.equalsIgnoreCase(peer.publicHost())) {
+                    if (exclude.contains(peer.publicHost().toLowerCase(Locale.ROOT))) {
                         continue;
                     }
                     if (isOwnPublicHost(peer.publicHost())) {
                         continue;
                     }
-                    BoundDest probed = probeFixedHost(peer.publicHost(), peer.publicPort(), needBedrock);
+                    BoundDest probed = probeFixedHost(
+                            peer.publicHost(), peer.publicPort(), needBedrock, peer.displayName());
                     if (probed != null) {
                         dest = probed;
                         break;
                     }
                 }
-                if (dest == null) {
-                    Set<String> exclude = new HashSet<>();
-                    if (excludeHost != null && !excludeHost.isBlank()) {
-                        exclude.add(excludeHost.toLowerCase(Locale.ROOT));
+                Portal seed = db.findPortal(portalId).orElse(null);
+                if (dest == null && seed != null) {
+                    dest = searchBindTarget(
+                            portalId,
+                            seed,
+                            needBedrock,
+                            config.bindRequireGeyser() && needBedrock,
+                            bedProto,
+                            bedVer,
+                            exclude
+                    );
+                }
+                // Soft fallback: if everything recent was skipped and the pool is thin, allow
+                // reusing older dial targets (still never the current host).
+                if (dest == null && seed != null && exclude.size() > 1) {
+                    Set<String> soft = new HashSet<>();
+                    if (currentHost != null && !currentHost.isBlank()) {
+                        soft.add(currentHost.toLowerCase(Locale.ROOT));
                     }
-                    Portal seed = db.findPortal(portalId).orElse(null);
-                    if (seed != null) {
-                        dest = searchBindTarget(
-                                portalId,
-                                seed,
-                                needBedrock,
-                                config.bindRequireGeyser() && needBedrock,
-                                bedProto,
-                                bedVer,
-                                exclude
-                        );
-                    }
+                    plugin.getLogger().info("Dial " + portalId + ": no fresh target, soft-retry without recent exclude");
+                    dest = searchBindTarget(
+                            portalId,
+                            seed,
+                            needBedrock,
+                            config.bindRequireGeyser() && needBedrock,
+                            bedProto,
+                            bedVer,
+                            soft
+                    );
                 }
             } catch (Throwable t) {
                 plugin.getLogger().warning("Dial bind failed for " + portalId + ": " + t.getMessage());
@@ -325,7 +349,7 @@ public final class PortalBindService {
         UUID creatorId = creator != null ? creator.getUniqueId() : portal.creator();
         boolean creatorBedrock = creator != null && BedrockPlayers.isBedrock(creator);
         // Hard Geyser only for actual Bedrock creators. bind-require-geyser still prefers dual-stack
-        // hosts, but must not skip MultiversePortals club peers (e.g. IT) for random public Geyser.
+        // hosts, but must not skip MultiversePortals club peers for random public Geyser.
         boolean needBedrock = creatorBedrock;
         boolean requireGeyser = config.bindRequireGeyser();
         int bedProto = creatorBedrock ? BedrockPlayers.protocolVersion(creator).orElse(0) : 0;
@@ -338,16 +362,43 @@ public final class PortalBindService {
         Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
             BoundDest dest = null;
             try {
-                if (plugin.scannerPool() != null) {
-                    plugin.scannerPool().pullForBind(creator);
+                final Set<String> excludeAll = new HashSet<>(exclude);
+                excludeAll.addAll(recentExcludeHosts());
+                refreshHubBeforeBind(creator);
+                dest = searchBindTarget(portalId, portal, needBedrock, requireGeyser, bedProto, bedVer, excludeAll);
+                // New Multi portal: nearby-duplicate already diversifies within radius.
+                // If recent-exclude emptied the club (e.g. only one Geyser hub peer left),
+                // soft-retry without it so we stay on club instead of random public.
+                if (dest == null && !recentExcludeHosts().isEmpty()) {
+                    Set<String> soft = new HashSet<>(exclude);
+                    plugin.getLogger().info("Bind " + portalId
+                            + ": no target with recent exclude, soft-retry without it");
+                    dest = searchBindTarget(portalId, portal, needBedrock, requireGeyser, bedProto, bedVer, soft);
                 }
-                dest = searchBindTarget(portalId, portal, needBedrock, requireGeyser, bedProto, bedVer, exclude);
             } catch (Throwable t) {
                 plugin.getLogger().warning("Bind search failed for " + portalId + ": " + t.getMessage());
             }
             BoundDest finalDest = dest;
             Bukkit.getScheduler().runTask(plugin, () -> finishBind(portalId, finalDest, creatorId));
         });
+    }
+
+    /** Always refresh central catalog + hub-pool before Multi/dial bind. */
+    private void refreshHubBeforeBind(Player creator) {
+        if (plugin.scannerPool() != null) {
+            try {
+                int n = plugin.scannerPool().pullForBind(creator);
+                if (n > 0) {
+                    plugin.getLogger().info("Bind: hub-pool pull +" + n + " candidates");
+                }
+            } catch (Throwable t) {
+                plugin.getLogger().warning("Bind: hub-pool pull failed: "
+                        + (t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage()));
+            }
+        }
+        if (plugin.catalogShareService() != null) {
+            plugin.catalogShareService().pullForBindBlocking();
+        }
     }
 
     /** Club-only candidates (registry MVP + known_mvp), same hosts a dial cycles through. */
@@ -451,7 +502,7 @@ public final class PortalBindService {
         Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
             BoundDest dest = null;
             try {
-                dest = probeFixedHost(hostF, javaF, needBedrock);
+                dest = probeFixedHost(hostF, javaF, needBedrock, null);
             } catch (Throwable t) {
                 plugin.getLogger().warning("Fixed bind failed for " + portalId + ": " + t.getMessage());
             }
@@ -460,14 +511,18 @@ public final class PortalBindService {
         });
     }
 
-    private BoundDest probeFixedHost(String host, int javaPort, boolean needBedrock) {
+    /**
+     * Live-probe a known host. Sign label prefers {@code preferredLabel} (hub display name),
+     * then Java MOTD, never the raw IP or Bedrock protocol version.
+     */
+    private BoundDest probeFixedHost(String host, int javaPort, boolean needBedrock, String preferredLabel) {
         int timeout = config.scannerProbeTimeoutMs();
-        ServerProbe.Result r = ServerProbe.probe(host, javaPort, timeout);
-        if (r.status() != ServerProbe.Status.OK && r.status() != ServerProbe.Status.FULL) {
-            plugin.getLogger().info("Fixed bind " + host + ":" + javaPort + " → " + r.status());
+        ServerProbe.StatusInfo info = ServerProbe.probeStatus(host, javaPort, timeout);
+        if (info.status() != ServerProbe.Status.OK && info.status() != ServerProbe.Status.FULL) {
+            plugin.getLogger().info("Fixed bind " + host + ":" + javaPort + " → " + info.status());
             return null;
         }
-        String label = host;
+        String label = resolveBindLabel(preferredLabel, info.motd(), host);
         int transferPort = javaPort;
         int bedProto = 0;
         String bedVer = "";
@@ -478,13 +533,57 @@ public final class PortalBindService {
                 transferPort = bed.get().port();
                 bedProto = bed.get().protocol();
                 bedVer = bed.get().version() == null ? "" : bed.get().version();
-                label = truncate(bed.get().version() != null ? bed.get().version() : label, 40);
+                // Prefer Bedrock MOTD only when we still have no human label
+                if (labelEqualsHost(label, host) && bed.get().motd() != null && !bed.get().motd().isBlank()) {
+                    label = truncate(PortalSigns.cleanLabel(bed.get().name()), 40);
+                    if (label.isBlank()) {
+                        label = host;
+                    }
+                }
             } else if (needBedrock && config.bindRequireGeyser()) {
                 plugin.getLogger().info("Fixed bind " + host + ":" + javaPort + " — no Geyser for Bedrock");
                 return null;
             }
         }
         return new BoundDest(host, transferPort, javaPort, label, bedProto, bedVer);
+    }
+
+    private static String resolveBindLabel(String preferred, String motd, String host) {
+        if (preferred != null && !preferred.isBlank()) {
+            String p = truncate(PortalSigns.cleanLabel(preferred), 40);
+            if (!p.isBlank() && !labelEqualsHost(p, host)) {
+                return p;
+            }
+            if (!p.isBlank()) {
+                // preferred was literally the host — still try MOTD below
+            } else {
+                preferred = null;
+            }
+        }
+        if (motd != null && !motd.isBlank()) {
+            String m = truncate(PortalSigns.cleanLabel(motd), 40);
+            if (!m.isBlank() && !labelEqualsHost(m, host) && !looksLikeVersionOnlyLabel(m)) {
+                return m;
+            }
+        }
+        if (preferred != null && !preferred.isBlank()) {
+            String p = truncate(PortalSigns.cleanLabel(preferred), 40);
+            if (!p.isBlank()) {
+                return p;
+            }
+        }
+        return host == null ? "?" : host;
+    }
+
+    private static boolean labelEqualsHost(String label, String host) {
+        if (label == null || host == null) {
+            return false;
+        }
+        return label.equalsIgnoreCase(host.trim());
+    }
+
+    private static boolean looksLikeVersionOnlyLabel(String s) {
+        return s != null && s.matches("(?i)v?\\d+(\\.\\d+){1,3}([-_].*)?");
     }
 
     /**
@@ -573,6 +672,7 @@ public final class PortalBindService {
         }
 
         stopWhiteFx(portalId);
+        rememberRecentBind(dest.host());
         portal.setBoundHost(dest.host());
         // Sticky = one server: java TCP always; boundPort keeps Bedrock/Geyser when known
         portal.setBoundJavaPort(dest.javaPort());
@@ -644,9 +744,12 @@ public final class PortalBindService {
         int noGeyser = 0;
         int bedMismatch = 0;
         int dead = 0;
+        int megaSkipped = 0;
         // Live target that works but duplicates a nearby portal's destination — used only
         // when no distinct alternative is found.
         BoundDest duplicateFallback = null;
+        FlowBalance.Weights flowW = config.flowBalanceWeights();
+        int originOnline = Bukkit.getOnlinePlayers().size();
 
         while (System.currentTimeMillis() < deadline) {
             if (!db.portalAlive(portalId)) {
@@ -668,7 +771,7 @@ public final class PortalBindService {
                     plugin.getLogger().info("Bind " + portalId + ": waiting for scanner pool…");
                 }
                 try {
-                    Thread.sleep(1500);
+                    Thread.sleep(400);
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
                     return null;
@@ -684,19 +787,54 @@ public final class PortalBindService {
                         + " club=" + club
                         + " needBedrock=" + needBedrock
                         + " requireGeyser=" + requireGeyser
+                        + " flowBalance=" + flowW.enabled()
+                        + " originOnline=" + originOnline
                         + (exclude.isEmpty() ? "" : " exclude=" + exclude.size()));
             }
             int max = Math.max(1, config.scannerMaxAttempts());
             int tried = 0;
+            // When flow-balance is on, collect several OK peers in this pass and pick best live flow.
+            List<ScoredOk> passOk = new ArrayList<>();
+            int okBand = flowW.enabled() ? Math.min(config.flowLiveOkBand(), max) : 1;
+            // Club/MVP first as its own phase — never mix with public in the same flow-pick.
+            // Nearby-duplicate may skip a hub peer; only after the whole club tier is done
+            // do we fall through to scanners.
+            boolean clubPhase = true;
+            int clubSeen = 0;
             for (TrustedPeer peer : peers) {
+                if (clubPhase && !peer.hasPlugin()) {
+                    if (!passOk.isEmpty()) {
+                        passOk.sort(Comparator.comparingDouble((ScoredOk s) -> s.score).reversed());
+                        BoundDest best = passOk.get(0).dest;
+                        plugin.getLogger().info("Bind " + portalId + ": club flow-pick "
+                                + best.host() + " among " + passOk.size() + " club OK"
+                                + " (best flow=" + String.format(Locale.ROOT, "%.1f", passOk.get(0).score) + ")");
+                        return best;
+                    }
+                    // Nearby-duplicate / recent-exclude must NOT win here — keep searching public.
+                    // duplicateFallback is only a last resort after the full club+public pass.
+                    clubPhase = false;
+                    plugin.getLogger().info("Bind " + portalId + ": club exhausted (seen=" + clubSeen
+                            + "), falling back to public scanners"
+                            + (duplicateFallback != null
+                            ? " (holding " + duplicateFallback.host() + " as last-resort only)"
+                            : ""));
+                    tried = 0;
+                }
                 if (tried >= max || System.currentTimeMillis() >= deadline) {
+                    break;
+                }
+                if (flowW.enabled() && passOk.size() >= okBand) {
                     break;
                 }
                 if (isOwnPublicHost(peer.publicHost())) {
                     continue;
                 }
-                if (!exclude.isEmpty() && peer.publicHost() != null
-                        && exclude.contains(peer.publicHost().toLowerCase(Locale.ROOT))) {
+                boolean recentExcluded = !exclude.isEmpty() && peer.publicHost() != null
+                        && exclude.contains(peer.publicHost().toLowerCase(Locale.ROOT));
+                // Public: hard-skip recent exclude. Club: still probe and keep as fallback so a
+                // thin hub mesh does not fall through to random scanners.
+                if (recentExcluded && !peer.hasPlugin()) {
                     continue;
                 }
                 if (config.scannerMemoryEnabled() && config.scannerDeadTtlMs() > 0
@@ -705,11 +843,12 @@ public final class PortalBindService {
                         && !peer.hasPlugin()) {
                     continue;
                 }
-                // Club (MultiversePortals) peers must stay eligible even if a past transfer
-                // stamped BAD_JOIN — otherwise Random never reaches IT/hub and only MineScan wins.
-                if (!peer.hasPlugin() && db.isBadJoinHost(peer.publicHost(), peer.publicPort())) {
-                    continue;
+                if (peer.hasPlugin()) {
+                    clubSeen++;
                 }
+                // Club (MultiversePortals) peers must stay eligible even if a past transfer
+                // stamped BAD_JOIN — otherwise Random never reaches club/hub peers and only scanners win.
+                // BAD_JOIN for public hosts is soft-ranked by score (later), not hard-skipped.
                 tried++;
                 totalTried++;
                 ServerProbe.Result r = ServerProbe.probe(peer.publicHost(), peer.publicPort(), timeout);
@@ -739,6 +878,13 @@ public final class PortalBindService {
                     continue;
                 }
 
+                if (!peer.hasPlugin() && FlowBalance.rejectMega(r.online(), flowW)) {
+                    megaSkipped++;
+                    plugin.getLogger().info("Skip " + peer.publicHost()
+                            + " — mega hard-cap online=" + r.online());
+                    continue;
+                }
+
                 int transferPort = peer.publicPort();
                 int bedP = 0;
                 String bedV = null;
@@ -761,8 +907,16 @@ public final class PortalBindService {
                     if (bed == null || bed.mismatch) {
                         if (bed != null && bed.mismatch) {
                             bedMismatch++;
+                            if (peer.hasPlugin()) {
+                                plugin.getLogger().info("Bind " + portalId + ": skip club "
+                                        + peer.publicHost() + " — Bedrock protocol mismatch");
+                            }
                         } else {
                             noGeyser++;
+                            if (peer.hasPlugin()) {
+                                plugin.getLogger().info("Bind " + portalId + ": skip club "
+                                        + peer.publicHost() + " — no Geyser (Bedrock creator)");
+                            }
                             if (config.scannerMemoryEnabled()) {
                                 db.recordProbe(peer.publicHost(), peer.publicPort(),
                                         Database.ProbeStatus.NO_GEYSER,
@@ -810,10 +964,12 @@ public final class PortalBindService {
                     }
                 }
 
+                double flowScore = FlowBalance.score(originOnline, r.online(), flowW);
                 plugin.getLogger().info("Bind candidate OK " + peer.publicHost() + ":" + transferPort
                         + " label=" + label
                         + " club=" + peer.hasPlugin()
                         + " online=" + r.online() + "/" + r.max()
+                        + " flow=" + String.format(Locale.ROOT, "%.1f", flowScore)
                         + (bedP > 0 ? " bed=" + bedP + "/" + bedV : ""));
                 Integer bedPortOut = bedP > 0 ? transferPort : null;
                 Integer bedProtoOut = bedP > 0 ? bedP : null;
@@ -825,6 +981,8 @@ public final class PortalBindService {
                         null, bedPortOut, bedProtoOut, bedV, label);
                 BoundDest cand = new BoundDest(peer.publicHost(), transferPort, peer.publicPort(), label, bedP, bedV);
                 if (nearbyPortalPointsTo(seed, peer.publicHost())) {
+                    // Hard diversify: never pick a host that a nearby Multi portal already uses,
+                    // while other club/public candidates remain. Keep only as absolute last resort.
                     if (duplicateFallback == null) {
                         duplicateFallback = cand;
                     }
@@ -833,7 +991,27 @@ public final class PortalBindService {
                             + " blocks already leads there, trying a different target");
                     continue;
                 }
-                return cand;
+                if (recentExcluded) {
+                    if (duplicateFallback == null) {
+                        duplicateFallback = cand;
+                    }
+                    plugin.getLogger().info("Skip " + peer.publicHost()
+                            + " — recent dial/bind exclude, trying a different target");
+                    continue;
+                }
+                if (!flowW.enabled()) {
+                    return cand;
+                }
+                passOk.add(new ScoredOk(cand, flowScore));
+            }
+
+            if (!passOk.isEmpty()) {
+                passOk.sort(Comparator.comparingDouble((ScoredOk s) -> s.score).reversed());
+                BoundDest best = passOk.get(0).dest;
+                plugin.getLogger().info("Bind " + portalId + ": flow-pick "
+                        + best.host() + " among " + passOk.size() + " OK in pass"
+                        + " (best flow=" + String.format(Locale.ROOT, "%.1f", passOk.get(0).score) + ")");
+                return best;
             }
 
             if (duplicateFallback != null) {
@@ -868,9 +1046,13 @@ public final class PortalBindService {
         plugin.getLogger().warning("Bind " + portalId + " failed: poolTried=" + totalTried
                 + " javaOk=" + okJava + " noGeyser=" + noGeyser
                 + " bedMismatch=" + bedMismatch + " dead=" + dead
+                + " megaSkipped=" + megaSkipped
                 + " requireGeyser=" + requireGeyser
                 + " needBedrock=" + needBedrock);
         return null;
+    }
+
+    private record ScoredOk(BoundDest dest, double score) {
     }
 
     /**
@@ -909,6 +1091,7 @@ public final class PortalBindService {
      * Bind order: network club (has MultiversePortals) before any public scanner host.
      * Within each tier, confirmed-Geyser hosts rise when dual-stack is preferred — but
      * external Geyser must never outrank a club peer without Geyser.
+     * Soft flow-balance sorts each tier by origin vs dest online (cached probe).
      */
     private void orderBindPeers(List<TrustedPeer> peers, boolean preferDualStack, boolean shuffle) {
         Set<String> geyserKeys = new java.util.HashSet<>();
@@ -946,25 +1129,104 @@ public final class PortalBindService {
                 extOther.add(p);
             }
         }
-        if (shuffle) {
-            Collections.shuffle(clubGeyser);
-            Collections.shuffle(clubOther);
-            Collections.shuffle(extGeyser);
-            Collections.shuffle(extOther);
-        } else {
-            Comparator<TrustedPeer> byHost = Comparator
-                    .comparing((TrustedPeer p) -> p.publicHost() == null ? "" : p.publicHost().toLowerCase())
-                    .thenComparingInt(TrustedPeer::publicPort);
-            clubGeyser.sort(byHost);
-            clubOther.sort(byHost);
-            extGeyser.sort(byHost);
-            extOther.sort(byHost);
-        }
+        FlowBalance.Weights flowW = config.flowBalanceWeights();
+        int originOnline = Bukkit.getOnlinePlayers().size();
+        Map<String, Integer> onlineMap = flowW.enabled()
+                ? db.probeOnlineMap(Math.max(500, peers.size() + 100))
+                : Map.of();
+        Random rng = ThreadLocalRandom.current();
+        // Club: sparsest hub mesh first (known_mvp score / registry degree) — then soft shuffle ties.
+        sortClubBySparseHubLinks(clubGeyser, rng);
+        sortClubBySparseHubLinks(clubOther, rng);
+        // Public scanners: flow-balance / shuffle as before.
+        rankTier(extGeyser, originOnline, onlineMap, flowW, shuffle, rng);
+        rankTier(extOther, originOnline, onlineMap, flowW, shuffle, rng);
         peers.clear();
         peers.addAll(clubGeyser);
         peers.addAll(clubOther);
         peers.addAll(extGeyser);
         peers.addAll(extOther);
+    }
+
+    /**
+     * Prefer MVP peers with fewer hub portal links so the club mesh fills in evenly.
+     * Uses registry degrees when available, else known_mvp score (hub exports sparseHubScore).
+     */
+    private void sortClubBySparseHubLinks(List<TrustedPeer> tier, Random rng) {
+        if (tier.size() < 2) {
+            return;
+        }
+        Map<String, Integer> degreeById = Map.of();
+        if (plugin.registry() != null && plugin.registry().enabled()) {
+            degreeById = plugin.registry().hubLinkDegrees();
+        }
+        Map<String, Double> scoreById = new HashMap<>();
+        Map<String, Double> scoreByHost = new HashMap<>();
+        for (var known : db.listKnownMvp(Math.max(80, config.scannerVerifiedLimit() * 2))) {
+            if (known.serverId() != null) {
+                scoreById.put(known.serverId().toLowerCase(Locale.ROOT), known.score());
+            }
+            if (known.publicHost() != null) {
+                scoreByHost.put(keyHost(known.publicHost(), known.publicPort()), known.score());
+            }
+        }
+        final Map<String, Integer> deg = degreeById;
+        record ClubRank(TrustedPeer peer, int degree, double score, double jitter) {}
+        List<ClubRank> ranked = new ArrayList<>(tier.size());
+        for (TrustedPeer p : tier) {
+            int d = 999;
+            if (p.serverId() != null && deg.containsKey(p.serverId())) {
+                d = deg.get(p.serverId());
+            }
+            double sc = 0;
+            if (p.serverId() != null) {
+                sc = scoreById.getOrDefault(p.serverId().toLowerCase(Locale.ROOT), 0.0);
+            }
+            if (sc <= 0) {
+                sc = scoreByHost.getOrDefault(keyHost(p.publicHost(), p.publicPort()), 0.0);
+            }
+            ranked.add(new ClubRank(p, d, sc, rng.nextDouble()));
+        }
+        ranked.sort(Comparator
+                .comparingInt(ClubRank::degree)
+                .thenComparing(Comparator.comparingDouble(ClubRank::score).reversed())
+                .thenComparingDouble(ClubRank::jitter));
+        tier.clear();
+        for (ClubRank r : ranked) {
+            tier.add(r.peer());
+        }
+    }
+
+    private void rankTier(
+            List<TrustedPeer> tier,
+            int originOnline,
+            Map<String, Integer> onlineMap,
+            FlowBalance.Weights flowW,
+            boolean shuffle,
+            Random rng
+    ) {
+        if (tier.size() < 2) {
+            return;
+        }
+        if (flowW.enabled()) {
+            FlowBalance.sortByFlow(
+                    tier,
+                    originOnline,
+                    p -> onlineMap.getOrDefault(keyHost(p.publicHost(), p.publicPort()), -1),
+                    flowW,
+                    shuffle,
+                    rng
+            );
+            return;
+        }
+        if (shuffle) {
+            Collections.shuffle(tier, rng);
+        } else {
+            Comparator<TrustedPeer> byHost = Comparator
+                    .comparing((TrustedPeer p) -> p.publicHost() == null ? "" : p.publicHost().toLowerCase())
+                    .thenComparingInt(TrustedPeer::publicPort);
+            tier.sort(byHost);
+        }
     }
 
     /** Catalog entries already confirmed to run Geyser (local probe cache + MySQL registry). */
@@ -1056,26 +1318,28 @@ public final class PortalBindService {
                 out.add(known.toTrustedPeer(config.signingSecret()));
             }
         }
-        // 2) Public scanners (MineScan etc.) — fallback after club peers
+        // 2) Public scanners (MineScan etc.) — fallback after club peers; fail-open per source
         if (plugin.scannerHub() != null && config.scannerEnabled()) {
-            for (ScannedServer s : plugin.scannerHub().cached()) {
-                if (isOwnPublicHost(s.host())) {
-                    continue;
+            try {
+                for (ScannedServer s : plugin.scannerHub().cached()) {
+                    if (isOwnPublicHost(s.host())) {
+                        continue;
+                    }
+                    String branch = versionBranch(s.version());
+                    if (!ourBranch.isEmpty() && !branch.isEmpty() && !ourBranch.equals(branch)) {
+                        continue;
+                    }
+                    String k = keyHost(s.host(), s.port());
+                    if (seen.add(k)) {
+                        out.add(s.toPeer());
+                    }
                 }
-                String branch = versionBranch(s.version());
-                if (!ourBranch.isEmpty() && !branch.isEmpty() && !ourBranch.equals(branch)) {
-                    continue;
-                }
-                String k = keyHost(s.host(), s.port());
-                if (seen.add(k)) {
-                    out.add(s.toPeer());
-                }
+            } catch (Throwable t) {
+                plugin.getLogger().warning("Bind: scanner cache skipped: "
+                        + (t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage()));
             }
         }
-        if (!out.isEmpty()) {
-            return out;
-        }
-        // 3) Local scanner catalog (SQLite)
+        // 3) Always merge local probe_cache / hub pull — do not stop at a thin scanner cache alone
         for (var entry : db.listBindCandidates(ourBranch, limit, config.scannerDeadTtlMs())) {
             if (isOwnPublicHost(entry.host())) {
                 continue;
@@ -1085,7 +1349,7 @@ public final class PortalBindService {
                 out.add(entry.toPeer());
             }
         }
-        if (out.isEmpty()) {
+        if (out.size() < Math.max(8, limit / 4)) {
             for (var entry : db.listScoredCandidates(ourBranch, limit, config.scannerDeadTtlMs())) {
                 if (isOwnPublicHost(entry.host())) {
                     continue;
@@ -1109,6 +1373,26 @@ public final class PortalBindService {
             }
         }
         return out;
+    }
+
+    /** Record a successful Multi/dial destination so the dial skips it for a while. */
+    private void rememberRecentBind(String host) {
+        int sec = config.dialRecentExcludeSeconds();
+        if (sec <= 0 || host == null || host.isBlank()) {
+            return;
+        }
+        recentBindUntil.put(host.toLowerCase(Locale.ROOT), System.currentTimeMillis() + sec * 1000L);
+    }
+
+    /** Hosts chosen recently by dial / Multi bind (lowercase). */
+    private Set<String> recentExcludeHosts() {
+        int sec = config.dialRecentExcludeSeconds();
+        if (sec <= 0) {
+            return Set.of();
+        }
+        long now = System.currentTimeMillis();
+        recentBindUntil.entrySet().removeIf(e -> e.getValue() == null || e.getValue() <= now);
+        return Set.copyOf(recentBindUntil.keySet());
     }
 
     /** Same public IP/host as this server — never bind Random portals to ourselves. */

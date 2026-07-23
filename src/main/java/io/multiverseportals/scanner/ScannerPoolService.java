@@ -33,6 +33,8 @@ public final class ScannerPoolService {
     private BukkitTask probeTask;
     private final AtomicInteger lastHubPullCount = new AtomicInteger(0);
     private final AtomicLong lastPullMs = new AtomicLong(0);
+    private final AtomicLong lastHubSuccessMs = new AtomicLong(0);
+    private final AtomicInteger consecutiveHubFails = new AtomicInteger(0);
 
     public ScannerPoolService(
             MultiversePortalsPlugin plugin,
@@ -81,10 +83,23 @@ public final class ScannerPoolService {
         return lastHubPullCount.get();
     }
 
+    /**
+     * Prefer hub-fed candidates over public scanners only while the hub is known healthy.
+     * Hub down / cooldown / empty pull → always use MineScan/Cornbread (fail-open).
+     */
     public boolean preferSkipPublicScanners() {
-        return config.scannerHubPreferOverPublic()
-                && lastHubPullCount.get() >= config.scannerHubMinCandidates()
-                && (System.currentTimeMillis() - lastPullMs.get()) < config.scannerHubPullIntervalSeconds() * 2000L;
+        if (!config.scannerHubPreferOverPublic()) {
+            return false;
+        }
+        if (consecutiveHubFails.get() > 0 || lastHubSuccessMs.get() <= 0) {
+            return false;
+        }
+        if (lastHubPullCount.get() < config.scannerHubMinCandidates()) {
+            return false;
+        }
+        long age = System.currentTimeMillis() - lastHubSuccessMs.get();
+        // Slightly longer than pull interval — never skip if success is stale
+        return age < config.scannerHubPullIntervalSeconds() * 1500L;
     }
 
     /** Sync hub vacuum listings into MySQL (hub only). */
@@ -101,13 +116,17 @@ public final class ScannerPoolService {
 
     /**
      * Blocking pull used before bind when local scanner catalog is thin.
+     * Uses a short timeout; hub failure never blocks public-scanner bind.
      * @return number of servers ingested into local probe_cache
      */
     public int pullForBind(Player creator) {
         if (!config.scannerHubPoolEnabled() || !config.scannerHubPullBeforeBind()) {
             return 0;
         }
-        return pullOnce(creator, true);
+        if (hubUrls().stream().allMatch(peerClient::isHubCoolingDown)) {
+            return 0;
+        }
+        return pullOnce(creator, true, java.time.Duration.ofSeconds(2));
     }
 
     public void reportProbeAsync(
@@ -146,7 +165,7 @@ public final class ScannerPoolService {
             if (displayName != null) {
                 report.addProperty("displayName", displayName);
             }
-            report.addProperty("source", "leaf");
+            report.addProperty("source", status == Database.ProbeStatus.BAD_JOIN ? "bounce" : "leaf");
             JsonArray arr = new JsonArray();
             arr.add(report);
             JsonObject body = new JsonObject();
@@ -164,7 +183,7 @@ public final class ScannerPoolService {
                 pullFromLocalRegistry();
                 return;
             }
-            pullOnce(null, false);
+            pullOnce(null, false, java.time.Duration.ofSeconds(6));
         } catch (Exception e) {
             plugin.getLogger().warning("Scanner hub-pool pull failed: " + e.getMessage());
         }
@@ -178,7 +197,7 @@ public final class ScannerPoolService {
         }
     }
 
-    private int pullOnce(Player creator, boolean force) {
+    private int pullOnce(Player creator, boolean force, java.time.Duration timeout) {
         long now = System.currentTimeMillis();
         if (!force && now - lastPullMs.get() < 15_000L) {
             return lastHubPullCount.get();
@@ -186,7 +205,10 @@ public final class ScannerPoolService {
         JsonObject filters = buildFilters(creator);
         int ingested = 0;
         for (String url : hubUrls()) {
-            var resp = peerClient.scannerCandidates(url, filters.deepCopy());
+            if (peerClient.isHubCoolingDown(url)) {
+                continue;
+            }
+            var resp = peerClient.scannerCandidates(url, filters.deepCopy(), timeout);
             if (resp.isEmpty() || !resp.get().has("servers") || !resp.get().get("servers").isJsonArray()) {
                 continue;
             }
@@ -195,10 +217,15 @@ public final class ScannerPoolService {
                 break;
             }
         }
-        lastHubPullCount.set(ingested);
         lastPullMs.set(now);
         if (ingested > 0) {
+            lastHubPullCount.set(ingested);
+            lastHubSuccessMs.set(now);
+            consecutiveHubFails.set(0);
             plugin.getLogger().info("Scanner hub-pool: pulled " + ingested + " candidates");
+        } else {
+            lastHubPullCount.set(0);
+            consecutiveHubFails.incrementAndGet();
         }
         return ingested;
     }
@@ -234,8 +261,13 @@ public final class ScannerPoolService {
             }
         }
         int n = db.upsertScannedServers(list);
+        db.pruneLocalCatalogIfNeeded(config);
         lastHubPullCount.set(n);
         lastPullMs.set(System.currentTimeMillis());
+        if (n > 0) {
+            lastHubSuccessMs.set(System.currentTimeMillis());
+            consecutiveHubFails.set(0);
+        }
     }
 
     private int ingestCandidates(JsonArray servers) {
@@ -270,7 +302,9 @@ public final class ScannerPoolService {
                 db.recordProbe(host, port, parseStatus(status), null, null, bedP, bedProto, bedVer, ver);
             }
         }
-        return db.upsertScannedServers(list);
+        int n = db.upsertScannedServers(list);
+        db.pruneLocalCatalogIfNeeded(config);
+        return n;
     }
 
     private void hubReprobeTop() {

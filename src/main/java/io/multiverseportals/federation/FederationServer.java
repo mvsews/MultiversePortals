@@ -583,7 +583,15 @@ public final class FederationServer {
             String source = r.has("source") && !r.get("source").isJsonNull() ? r.get("source").getAsString() : "leaf";
             Double delta = r.has("scoreDelta") && !r.get("scoreDelta").isJsonNull()
                     ? r.get("scoreDelta").getAsDouble() : null;
-            registry.upsertScannerProbeReport(host, port, status, mc, bedP, bedProto, bedVer, label, source, delta);
+            // Bounce / transfer-fail reports drive hub score via Transfer outcomes, not probe deltas.
+            if ("BAD_JOIN".equalsIgnoreCase(status)
+                    || "bounce".equalsIgnoreCase(source)
+                    || "travel-fail".equalsIgnoreCase(source)) {
+                registry.recordTransferOutcome(host, port, false,
+                        source == null || source.isBlank() ? "bounce" : source);
+            } else {
+                registry.upsertScannerProbeReport(host, port, status, mc, bedP, bedProto, bedVer, label, source, delta);
+            }
             n++;
         }
         JsonObject out = new JsonObject();

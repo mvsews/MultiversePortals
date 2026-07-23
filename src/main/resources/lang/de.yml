@@ -52,7 +52,7 @@ bedrock-dest-java-only: "<red>Dieser Server ist nur Java und unterstützt deine 
 bedrock-version-mismatch: "<yellow>Deine Bedrock</yellow> <white>%version%</white> <gray>(proto %proto%)</gray><yellow> — Ziel hat anderes Protokoll.</yellow> <gray>Suche anderen Server…</gray>"
 bedrock-bound-mismatch: "<red>Dieses Portal zeigt auf Geyser mit anderem Bedrock-Protokoll.</red> <gray>Deins:</gray> <white>%version%</white> <gray>(%proto%)</gray><gray>. Schild neu setzen oder per Java joinen.</gray>"
 dest-unstable: "<yellow>Portal auf der anderen Seite inaktiv.</yellow> <gray>Link bleibt — funktioniert wieder, wenn der Server online ist.</gray>"
-bounce-back: "<yellow>Portal auf der anderen Seite inaktiv</yellow> <white>(%host%)</white><yellow>.</yellow> <gray>Link bleibt — später erneut versuchen.</gray>"
+bounce-back: "<green>Willkommen zurück!</green> <yellow>Beitritt zu</yellow> <white>%label%</white> <yellow>fehlgeschlagen — Ruf dieses Servers gesenkt.</yellow> <gray>Portal-Link bleibt.</gray>"
 going-to: "<gray>→ </gray><aqua>%host%:%port%</aqua>"
 charge-left-plate: "<red>Abgebrochen — bleib auf der Platte</red>"
 charge-countdown: "<aqua>%dest%</aqua> <dark_gray>·</dark_gray> <white>%sec%s</white>"
