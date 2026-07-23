@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="assets/banner.png" alt="Multiverse Portals" width="100%">
-</p>
-
 <h1 align="center">Multiverse Portals</h1>
 
 <p align="center">
@@ -35,6 +31,10 @@
 **Язык в игре:** `/mvp lang en|de|ru|zh`
 
 ---
+
+<p align="center">
+  <img src="assets/banner.png" alt="Multiverse Portals" width="100%">
+</p>
 
 ## Установка за 5 минут (свой Paper)
 

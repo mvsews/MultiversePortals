@@ -1,14 +1,25 @@
 
+<h1 align="center">Multiverse Portals</h1>
 
-# Multiverse Portals
+<p align="center">
+  <strong>Many servers.<br>One portal network.</strong>
+</p>
 
-**Many servers.**  
-**One portal network.**
+<p align="center">
+  <a href="https://mp.mvse.ws/"><strong>Website &amp; jar → mp.mvse.ws</strong></a><br>
+  <a href="https://hangar.papermc.io/mvse/MultiversePortals">Hangar</a> ·
+  <a href="https://modrinth.com/project/multiverseportals">Modrinth</a> ·
+  <a href="https://www.curseforge.com/minecraft/bukkit-plugins/multiverse-portals-mvse">CurseForge</a> ·
+  <a href="https://github.com/mvsews/MultiversePortals/releases">GitHub</a>
+</p>
 
-**[Website & jar → mp.mvse.ws](https://mp.mvse.ws/)**  
-[Hangar](https://hangar.papermc.io/mvse/MultiversePortals) · [Modrinth](https://modrinth.com/project/multiverseportals) · [CurseForge](https://www.curseforge.com/minecraft/bukkit-plugins/multiverse-portals-mvse) · [GitHub](https://github.com/mvsews/MultiversePortals/releases)
-
-[English](README.md) · [Русский](README.ru.md) · [简体中文](README.zh.md) · [Player guide](portal_guide.en.md) · Technical
+<p align="center">
+  <a href="README.md">English</a> ·
+  <a href="README.ru.md">Русский</a> ·
+  <a href="README.zh.md">简体中文</a> ·
+  <a href="portal_guide.en.md">Player guide</a> ·
+  <a href="docs/TECHNICAL.md">Technical</a>
+</p>
 
 ---
 
@@ -25,6 +36,9 @@ Players build a portal from a **sign + pressure plate**. The game uses the vanil
 ---
 
 
+<p align="center">
+  <img src="assets/banner.png" alt="Multiverse Portals" width="100%">
+</p>
 
 ## Install in 5 minutes (your own Paper)
 
