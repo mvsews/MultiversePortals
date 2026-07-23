@@ -72,6 +72,13 @@ Within 3 blocks those texts are published as `signs: ["…"]` in the catalog / A
 ```bash
 curl -s https://mp.mvse.ws/mvp/v1/portals
 curl -s 'https://mp.mvse.ws/mvp/v1/portals?serverId=YOUR_SERVER_ID'
+
+# Live badges (English) — branded SVG for README, JSON for shields.io
+curl -s https://mp.mvse.ws/mvp/v1/badge/players.svg
+curl -s https://mp.mvse.ws/mvp/v1/badge/servers.svg
+curl -s https://mp.mvse.ws/mvp/v1/badge/network.svg
+curl -s https://mp.mvse.ws/mvp/v1/badge/players   # shields.io endpoint JSON
+# servers count = unique hosts (MVP peers + portal destinations)
 ```
 
 On every public server, portal edges are announced to the hub when portals bind/create/delete (and on the catalog-share interval).

@@ -1,6 +1,8 @@
 package io.multiverseportals.federation;
 
 import com.google.gson.Gson;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -18,7 +20,10 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.HashSet;
+import java.util.Locale;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -104,6 +109,29 @@ public final class FederationServer {
                 return;
             }
 
+            // Live badges for GitHub README (JSON for shields.io, SVG branded on mp.mvse.ws)
+            if ("/badge/players".equals(sub) || "/badges/players.json".equals(sub)) {
+                handleShieldsBadge(ex, method, "players");
+                return;
+            }
+            if ("/badge/servers".equals(sub) || "/badges/servers.json".equals(sub)) {
+                handleShieldsBadge(ex, method, "servers");
+                return;
+            }
+            if ("/badge/players.svg".equals(sub) || "/badges/players.svg".equals(sub)) {
+                handleSvgBadge(ex, method, "players");
+                return;
+            }
+            if ("/badge/servers.svg".equals(sub) || "/badges/servers.svg".equals(sub)) {
+                handleSvgBadge(ex, method, "servers");
+                return;
+            }
+            if ("/badge/network.svg".equals(sub) || "/badges/network.svg".equals(sub)
+                    || "/badge.svg".equals(sub)) {
+                handleSvgBadge(ex, method, "network");
+                return;
+            }
+
             if (!"POST".equalsIgnoreCase(method)) {
                 write(ex, 405, err("method"));
                 return;
@@ -179,6 +207,165 @@ public final class FederationServer {
         } catch (Exception e) {
             plugin.getLogger().warning("Federation error: " + e.getMessage());
             write(ex, 500, err("internal"));
+        }
+    }
+
+    /**
+     * shields.io endpoint JSON — English labels for GitHub README badges.
+     * @see <a href="https://shields.io/badges/endpoint-badge">Endpoint badge</a>
+     */
+    private void handleShieldsBadge(HttpExchange ex, String method, String kind) throws IOException {
+        if (!"GET".equalsIgnoreCase(method) && !"HEAD".equalsIgnoreCase(method)) {
+            write(ex, 405, err("method"));
+            return;
+        }
+        if (!config.catalogSharePublicRead() || catalogShare == null) {
+            write(ex, 403, err("badge unavailable"));
+            return;
+        }
+        JsonObject catalog = catalogShare.buildExportPayload();
+        JsonObject badge = new JsonObject();
+        badge.addProperty("schemaVersion", 1);
+        if ("players".equals(kind)) {
+            int n = 0;
+            n = networkPlayers(catalog);
+            badge.addProperty("label", "players online");
+            badge.addProperty("message", Integer.toString(n));
+            badge.addProperty("color", n > 0 ? "brightgreen" : "lightgrey");
+        } else {
+            int n = countNetworkServers(catalog);
+            badge.addProperty("label", "servers");
+            badge.addProperty("message", Integer.toString(n));
+            badge.addProperty("color", n > 0 ? "blue" : "lightgrey");
+        }
+        writeJsonBadge(ex, 200, badge, method);
+    }
+
+    private void handleSvgBadge(HttpExchange ex, String method, String kind) throws IOException {
+        if (!"GET".equalsIgnoreCase(method) && !"HEAD".equalsIgnoreCase(method)) {
+            write(ex, 405, err("method"));
+            return;
+        }
+        if (!config.catalogSharePublicRead() || catalogShare == null) {
+            write(ex, 403, err("badge unavailable"));
+            return;
+        }
+        JsonObject catalog = catalogShare.buildExportPayload();
+        int players = networkPlayers(catalog);
+        int servers = countNetworkServers(catalog);
+        byte[] svg;
+        if ("players".equals(kind)) {
+            svg = NetworkBadgeSvg.splitBadge(
+                    "players online",
+                    NetworkBadgeSvg.formatCount(players),
+                    NetworkBadgeSvg.Tone.PLAYERS,
+                    players > 0);
+        } else if ("servers".equals(kind)) {
+            svg = NetworkBadgeSvg.splitBadge(
+                    "servers",
+                    NetworkBadgeSvg.formatCount(servers),
+                    NetworkBadgeSvg.Tone.SERVERS,
+                    servers > 0);
+        } else {
+            svg = NetworkBadgeSvg.networkStrip(players, servers);
+        }
+        writeSvg(ex, 200, svg, method);
+    }
+
+    private static int networkPlayers(JsonObject catalog) {
+        if (!catalog.has("players") || !catalog.get("players").isJsonObject()) {
+            return 0;
+        }
+        JsonObject p = catalog.getAsJsonObject("players");
+        if (p.has("network") && p.get("network").isJsonPrimitive()) {
+            return Math.max(0, p.get("network").getAsInt());
+        }
+        if (p.has("mvp") && p.get("mvp").isJsonPrimitive()) {
+            return Math.max(0, p.get("mvp").getAsInt());
+        }
+        return 0;
+    }
+
+    /**
+     * Unique join endpoints across the network: MVP peers plus portal destinations
+     * (same host:port idea as players.network).
+     */
+    private static int countNetworkServers(JsonObject catalog) {
+        Set<String> hosts = new HashSet<>();
+        if (catalog.has("servers") && catalog.get("servers").isJsonArray()) {
+            for (JsonElement el : catalog.getAsJsonArray("servers")) {
+                if (!el.isJsonObject()) {
+                    continue;
+                }
+                JsonObject o = el.getAsJsonObject();
+                if (o.has("online") && o.get("online").isJsonPrimitive() && !o.get("online").getAsBoolean()) {
+                    continue;
+                }
+                addHostKey(hosts, strField(o, "publicHost"), intField(o, "publicPort", 0));
+            }
+        }
+        if (catalog.has("portals") && catalog.get("portals").isJsonArray()) {
+            for (JsonElement el : catalog.getAsJsonArray("portals")) {
+                if (!el.isJsonObject()) {
+                    continue;
+                }
+                JsonObject p = el.getAsJsonObject();
+                int port = intField(p, "destJavaPort", 0);
+                if (port <= 0) {
+                    port = intField(p, "destPort", 0);
+                }
+                addHostKey(hosts, strField(p, "destHost"), port);
+            }
+        }
+        return hosts.size();
+    }
+
+    private static void addHostKey(Set<String> hosts, String host, int port) {
+        if (host == null || host.isBlank() || port <= 0) {
+            return;
+        }
+        hosts.add(host.trim().toLowerCase(Locale.ROOT) + ":" + port);
+    }
+
+    private static String strField(JsonObject o, String key) {
+        if (!o.has(key) || o.get(key).isJsonNull() || !o.get(key).isJsonPrimitive()) {
+            return null;
+        }
+        return o.get(key).getAsString();
+    }
+
+    private static int intField(JsonObject o, String key, int fallback) {
+        if (!o.has(key) || o.get(key).isJsonNull() || !o.get(key).isJsonPrimitive()) {
+            return fallback;
+        }
+        try {
+            return o.get(key).getAsInt();
+        } catch (Exception e) {
+            return fallback;
+        }
+    }
+
+    private void writeJsonBadge(HttpExchange ex, int code, JsonObject body, String method) throws IOException {
+        writeBytes(ex, code, "application/json; charset=utf-8",
+                gson.toJson(body).getBytes(StandardCharsets.UTF_8), method);
+    }
+
+    private void writeSvg(HttpExchange ex, int code, byte[] svg, String method) throws IOException {
+        writeBytes(ex, code, "image/svg+xml; charset=utf-8", svg, method);
+    }
+
+    private void writeBytes(HttpExchange ex, int code, String contentType, byte[] data, String method)
+            throws IOException {
+        ex.getResponseHeaders().set("Content-Type", contentType);
+        ex.getResponseHeaders().set("Cache-Control", "public, max-age=60");
+        ex.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
+        if ("HEAD".equalsIgnoreCase(method)) {
+            ex.sendResponseHeaders(code, -1);
+            return;
+        }
+        ex.sendResponseHeaders(code, data.length);
+        try (OutputStream os = ex.getResponseBody()) {
+            os.write(data);
         }
     }
 

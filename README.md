@@ -1,4 +1,3 @@
-
 <h1 align="center">Multiverse Portals</h1>
 
 <p align="center">
@@ -38,6 +37,19 @@ Players build a portal from a **sign + pressure plate**. The game uses the vanil
 
 <p align="center">
   <img src="assets/banner.png" alt="Multiverse Portals" width="100%">
+</p>
+
+<p align="center">
+  <a href="https://mp.mvse.ws/"><img alt="Multiverse Portals network" src="https://mp.mvse.ws/mvp/v1/badge/network.svg?v=neon4"></a><br>
+  <a href="https://mp.mvse.ws/"><img alt="players online" src="https://mp.mvse.ws/mvp/v1/badge/players.svg?v=neon4"></a>
+  <a href="https://mp.mvse.ws/"><img alt="servers" src="https://mp.mvse.ws/mvp/v1/badge/servers.svg?v=neon4"></a>
+</p>
+
+<p align="center">
+  <a href="https://hangar.papermc.io/mvse/MultiversePortals"><img alt="Hangar" src="https://cdn.jsdelivr.net/npm/@intergrav/devins-badges@3/assets/cozy/available/hangar_vector.svg"></a>
+  <a href="https://modrinth.com/project/multiverseportals"><img alt="Modrinth" src="https://cdn.jsdelivr.net/npm/@intergrav/devins-badges@3/assets/cozy/available/modrinth_vector.svg"></a>
+  <a href="https://www.curseforge.com/minecraft/bukkit-plugins/multiverse-portals-mvse"><img alt="CurseForge" src="https://cdn.jsdelivr.net/npm/@intergrav/devins-badges@3/assets/cozy/available/curseforge_vector.svg"></a>
+  <a href="https://github.com/mvsews/MultiversePortals/releases"><img alt="GitHub" src="https://cdn.jsdelivr.net/npm/@intergrav/devins-badges@3/assets/cozy/available/github_vector.svg"></a>
 </p>
 
 ## Install in 5 minutes (your own Paper)

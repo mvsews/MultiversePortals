@@ -36,6 +36,19 @@
   <img src="assets/banner.png" alt="Multiverse Portals" width="100%">
 </p>
 
+<p align="center">
+  <a href="https://mp.mvse.ws/"><img alt="Multiverse Portals network" src="https://mp.mvse.ws/mvp/v1/badge/network.svg?v=neon4"></a><br>
+  <a href="https://mp.mvse.ws/"><img alt="players online" src="https://mp.mvse.ws/mvp/v1/badge/players.svg?v=neon4"></a>
+  <a href="https://mp.mvse.ws/"><img alt="servers" src="https://mp.mvse.ws/mvp/v1/badge/servers.svg?v=neon4"></a>
+</p>
+
+<p align="center">
+  <a href="https://hangar.papermc.io/mvse/MultiversePortals"><img alt="Hangar" src="https://cdn.jsdelivr.net/npm/@intergrav/devins-badges@3/assets/cozy/available/hangar_vector.svg"></a>
+  <a href="https://modrinth.com/project/multiverseportals"><img alt="Modrinth" src="https://cdn.jsdelivr.net/npm/@intergrav/devins-badges@3/assets/cozy/available/modrinth_vector.svg"></a>
+  <a href="https://www.curseforge.com/minecraft/bukkit-plugins/multiverse-portals-mvse"><img alt="CurseForge" src="https://cdn.jsdelivr.net/npm/@intergrav/devins-badges@3/assets/cozy/available/curseforge_vector.svg"></a>
+  <a href="https://github.com/mvsews/MultiversePortals/releases"><img alt="GitHub" src="https://cdn.jsdelivr.net/npm/@intergrav/devins-badges@3/assets/cozy/available/github_vector.svg"></a>
+</p>
+
 ## 5 分钟安装（自己的 Paper）
 
 服务器必须是 **Paper 1.21+**（原版 Vanilla 不行）。还没有 Paper？在这里下载：[papermc.io/downloads/paper](https://papermc.io/downloads/paper)，把 `paper.jar` 放进服务器目录并先运行一次（会生成 `server.properties`、世界和 `plugins` 文件夹）。
