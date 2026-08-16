@@ -104,7 +104,7 @@ server:
 docker run -d --name minecraft_mvp --network host -e EULA=TRUE -v mvp-data:/data mvsews/mvp && IP=$(curl -fsS https://api.ipify.org) && echo "Server ready — connect Java $IP:25565 | Bedrock $IP:19132"
 ```
 
-首次启动请等几分钟（下载 Paper + 生成世界）。命令结束会打印连接用的 IP。不设置名字时会自动生成（例如 “Peppery Bridge”）。每次**重启容器**会拉取最新 Geyser/Via*，并在 https://mp.mvse.ws/version.json 版本更新时更新 MultiversePortals（`-e UPDATE_MVP=false` 可跳过插件）。
+首次启动请等几分钟（下载 Paper + 生成世界）。命令结束会打印连接用的 IP。不设置名字时会自动生成（例如 “Peppery Bridge”）。每次**启动/重启容器**会拉取最新 **Geyser、Floodgate、ViaVersion、ViaBackwards、ViaRewind**（旧 Java 客户端），并在 https://mp.mvse.ws/version.json 版本更新时更新 **MultiversePortals**（`-e UPDATE_BEDROCK_BRIDGE=false` / `-e UPDATE_MVP=false` 可跳过）。
 
 **常用环境变量**——写在 `-e EULA=TRUE` 旁边：
 
@@ -117,7 +117,7 @@ docker run -d --name minecraft_mvp --network host -e EULA=TRUE -v mvp-data:/data
 | `BEDROCK_PORT` | `19132` | Geyser UDP 端口 |
 | `MEMORY` | `1G` | JVM 内存，例如 `-e MEMORY=2G` |
 | `FLOODGATE_KEY_B64` | （无） | 共享 Floodgate `key.pem` 的 base64——Bedrock 在「自己的」服之间跳转时用 |
-| `UPDATE_BEDROCK_BRIDGE` | `true` | 启动时刷新 Geyser / Floodgate / Via* |
+| `UPDATE_BEDROCK_BRIDGE` | `true` | 启动时刷新 Geyser / Floodgate / ViaVersion / ViaBackwards / ViaRewind |
 | `UPDATE_MVP` | `true` | 启动时若目录版本更新则替换 MultiversePortals |
 
 自定义名称和域名示例：

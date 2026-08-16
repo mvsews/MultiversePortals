@@ -1931,6 +1931,53 @@ public final class RegistryDatabase {
         return n;
     }
 
+    public Optional<String> travelStatus(String sessionId) {
+        if (!ready() || sessionId == null || sessionId.isBlank()) {
+            return Optional.empty();
+        }
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(
+                "SELECT status FROM registry_travel WHERE session_id=?")) {
+            ps.setString(1, sessionId.trim());
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    String st = rs.getString(1);
+                    return st == null || st.isBlank() ? Optional.empty() : Optional.of(st);
+                }
+            }
+        } catch (SQLException e) {
+            plugin.getLogger().warning("travelStatus: " + e.getMessage());
+        }
+        return Optional.empty();
+    }
+
+    public Optional<String> recentHopOutcome(String fromServer, String playerUuid, long sinceMs) {
+        if (!ready() || playerUuid == null || playerUuid.isBlank()) {
+            return Optional.empty();
+        }
+        String from = fromServer == null ? "" : fromServer.trim();
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement("""
+                SELECT outcome FROM registry_hop_events
+                WHERE player_uuid=? AND at>=?
+                  AND (?='' OR from_server=? OR reporter_id=?)
+                ORDER BY at DESC LIMIT 1
+                """)) {
+            ps.setString(1, playerUuid.trim());
+            ps.setLong(2, sinceMs);
+            ps.setString(3, from);
+            ps.setString(4, from);
+            ps.setString(5, from);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    String o = rs.getString(1);
+                    return o == null || o.isBlank() ? Optional.empty() : Optional.of(o);
+                }
+            }
+        } catch (SQLException e) {
+            plugin.getLogger().warning("recentHopOutcome: " + e.getMessage());
+        }
+        return Optional.empty();
+    }
+
     public JsonArray exportHopEvents(String fromId, String aboutId, String aboutHost, int aboutPort, int limit) {
         JsonArray out = new JsonArray();
         if (!ready()) {

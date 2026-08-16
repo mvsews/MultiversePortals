@@ -729,9 +729,22 @@ public final class CatalogShareService {
         if (owner == null || owner.isBlank() || owner.equalsIgnoreCase(config.serverId())) {
             return 0;
         }
-        int n = registry.ingestHopEvents(owner, body.getAsJsonArray("hopEvents"));
+        JsonArray hops = body.getAsJsonArray("hopEvents");
+        int n = registry.ingestHopEvents(owner, hops);
         if (n > 0) {
             plugin.getLogger().info("Hop events from " + owner + ": " + n);
+            var travel = plugin.travelService();
+            if (travel != null) {
+                for (JsonElement el : hops) {
+                    if (!el.isJsonObject()) {
+                        continue;
+                    }
+                    var ev = io.multiverseportals.model.HopEvent.fromJson(el.getAsJsonObject());
+                    if (ev != null) {
+                        travel.onDestHopReport(ev);
+                    }
+                }
+            }
         }
         return n;
     }

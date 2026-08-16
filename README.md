@@ -105,7 +105,7 @@ If you don’t have Paper yet and the machine has **Docker on Linux**, one comma
 docker run -d --name minecraft_mvp --network host -e EULA=TRUE -v mvp-data:/data mvsews/mvp && IP=$(curl -fsS https://api.ipify.org) && echo "Server ready — connect Java $IP:25565 | Bedrock $IP:19132"
 ```
 
-Wait a couple of minutes on first boot (Paper download + world gen). The command prints the IP to connect to. If you don’t set a name, one is generated for you (e.g. “Peppery Bridge”). Each **container restart** pulls latest Geyser/Via* and MultiversePortals if https://mp.mvse.ws/version.json is newer (`-e UPDATE_MVP=false` to leave the plugin alone).
+Wait a couple of minutes on first boot (Paper download + world gen). The command prints the IP to connect to. If you don’t set a name, one is generated for you (e.g. “Peppery Bridge”). Each **container start/restart** pulls latest **Geyser, Floodgate, ViaVersion, ViaBackwards, ViaRewind** (old Java clients) and **MultiversePortals** if https://mp.mvse.ws/version.json is newer (`-e UPDATE_BEDROCK_BRIDGE=false` / `-e UPDATE_MVP=false` to skip).
 
 **Useful env vars** — add next to `-e EULA=TRUE`:
 
@@ -118,7 +118,7 @@ Wait a couple of minutes on first boot (Paper download + world gen). The command
 | `BEDROCK_PORT` | `19132` | Geyser UDP port |
 | `MEMORY` | `1G` | JVM heap, e.g. `-e MEMORY=2G` |
 | `FLOODGATE_KEY_B64` | (none) | shared Floodgate `key.pem` as base64 — for Bedrock hops between your own servers |
-| `UPDATE_BEDROCK_BRIDGE` | `true` | on start, refresh Geyser / Floodgate / Via* |
+| `UPDATE_BEDROCK_BRIDGE` | `true` | on start, refresh Geyser / Floodgate / ViaVersion / ViaBackwards / ViaRewind |
 | `UPDATE_MVP` | `true` | on start, replace MultiversePortals if the catalog version is newer |
 
 Example with a custom name and domain:

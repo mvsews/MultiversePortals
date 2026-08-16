@@ -15,9 +15,7 @@ import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.data.BlockData;
-import org.bukkit.block.data.Directional;
 import org.bukkit.block.data.Orientable;
-import org.bukkit.block.data.type.WallSign;
 import org.bukkit.entity.BlockDisplay;
 import org.bukkit.entity.Display;
 import org.bukkit.entity.Entity;
@@ -37,6 +35,7 @@ import org.bukkit.event.player.PlayerBucketEmptyEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerPortalEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
+import org.bukkit.event.world.ChunkLoadEvent;
 import org.bukkit.event.world.PortalCreateEvent;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.util.Transformation;
@@ -95,29 +94,11 @@ public final class PortalMatter implements Listener {
             return;
         }
         Block sign = world.getBlockAt(portal.frame().x(), portal.frame().y(), portal.frame().z());
-        FrameDetector.Scan scan = FrameDetector.scan(sign, config.maxFrameRadius());
-        List<Location> cells = new ArrayList<>();
-        if (scan.closed() && !scan.interior().isEmpty()) {
-            cells.addAll(scan.interior());
+        FrameDetector.Scan scan = FrameDetector.scan(sign, config.maxFrameRadius(), config.maxInterior());
+        if (!scan.closed() || scan.interior().isEmpty()) {
+            return;
         }
-        if (cells.isEmpty()) {
-            cells = fallbackOpening(sign);
-        }
-        Axis axis = scan.closed() ? scan.axis() : detectAxis(cells);
-        Material look = matterMaterial();
-        boolean realNether = look == Material.NETHER_PORTAL;
-        for (Location cell : cells) {
-            Block block = world.getBlockAt(cell.getBlockX(), cell.getBlockY(), cell.getBlockZ());
-            String occupied = portalByCell.get(cellKey(block));
-            if (occupied != null && !occupied.equals(portal.id())) {
-                continue;
-            }
-            if (realNether) {
-                placeNetherSheet(world, cell, axis, portal.id());
-            } else {
-                spawnMatterBlock(world, cell, look, axis, portal.id());
-            }
-        }
+        paintCells(portal.id(), world, scan.interior(), scan.axis());
     }
 
     /** Fill an opening (network or local wool) with the purple sheet. */
@@ -126,8 +107,17 @@ public final class PortalMatter implements Listener {
             return;
         }
         remove(portalId);
+        paintCells(portalId, world, cells, axis);
+    }
+
+    /**
+     * Real nether-portal blocks only survive vanilla 21×21 rectangles. Giant rings
+     * (and anything the Nether would pop) use BlockDisplay so the sheet stays.
+     */
+    private void paintCells(String portalId, World world, List<Location> cells, Axis axis) {
+        clearStrayNetherPortal(world, cells, axis, portalId);
         Material look = matterMaterial();
-        boolean realNether = look == Material.NETHER_PORTAL;
+        boolean realNether = look == Material.NETHER_PORTAL && fitsVanillaNetherSheet(cells);
         for (Location cell : cells) {
             Block block = world.getBlockAt(cell.getBlockX(), cell.getBlockY(), cell.getBlockZ());
             String occupied = portalByCell.get(cellKey(block));
@@ -143,6 +133,101 @@ public final class PortalMatter implements Listener {
                 spawnMatterBlock(world, cell, look, axis, portalId);
             }
         }
+    }
+
+    /**
+     * Drop leftover nether-portal blocks from a previous over-fill (cave behind the
+     * jamb) so a small doorway does not keep a giant purple wall beside it.
+     */
+    private void clearStrayNetherPortal(World world, List<Location> keep, Axis axis, String portalId) {
+        if (world == null || keep == null || keep.isEmpty()) {
+            return;
+        }
+        Set<String> keepKeys = new HashSet<>();
+        int minX = Integer.MAX_VALUE, maxX = Integer.MIN_VALUE;
+        int minY = Integer.MAX_VALUE, maxY = Integer.MIN_VALUE;
+        int minZ = Integer.MAX_VALUE, maxZ = Integer.MIN_VALUE;
+        for (Location c : keep) {
+            keepKeys.add(world.getName() + "|" + c.getBlockX() + "|" + c.getBlockY() + "|" + c.getBlockZ());
+            minX = Math.min(minX, c.getBlockX());
+            maxX = Math.max(maxX, c.getBlockX());
+            minY = Math.min(minY, c.getBlockY());
+            maxY = Math.max(maxY, c.getBlockY());
+            minZ = Math.min(minZ, c.getBlockZ());
+            maxZ = Math.max(maxZ, c.getBlockZ());
+        }
+        int pad = 1;
+        int x0 = minX - pad, x1 = maxX + pad;
+        int y0 = minY - pad, y1 = maxY + pad;
+        int z0 = minZ - pad, z1 = maxZ + pad;
+        if (axis == Axis.X) {
+            z0 = minZ;
+            z1 = maxZ;
+        } else {
+            x0 = minX;
+            x1 = maxX;
+        }
+        for (int x = x0; x <= x1; x++) {
+            for (int y = y0; y <= y1; y++) {
+                for (int z = z0; z <= z1; z++) {
+                    Block block = world.getBlockAt(x, y, z);
+                    if (block.getType() != Material.NETHER_PORTAL) {
+                        continue;
+                    }
+                    String key = cellKey(block);
+                    if (keepKeys.contains(key)) {
+                        continue;
+                    }
+                    String occupied = portalByCell.get(key);
+                    if (occupied != null && !occupied.equals(portalId)) {
+                        continue;
+                    }
+                    block.setType(Material.AIR, false);
+                    if (portalId.equals(portalByCell.get(key))) {
+                        portalByCell.remove(key);
+                    }
+                }
+            }
+        }
+    }
+
+    public boolean hasSheet(String portalId) {
+        Set<String> cells = cellsByPortal.get(portalId);
+        return cells != null && !cells.isEmpty();
+    }
+
+    /**
+     * When the sign's chunk is loaded but matter was never painted (Nether often
+     * starts unloaded), fill the closed opening.
+     */
+    public void ensureSheet(Portal portal) {
+        if (!config.matterEnabled() || portal == null || hasSheet(portal.id())) {
+            return;
+        }
+        if (portal.status() == io.multiverseportals.model.PortalStatus.BROKEN_LOCAL
+                || portal.status() == io.multiverseportals.model.PortalStatus.BROKEN_REMOTE
+                || portal.status() == io.multiverseportals.model.PortalStatus.DISABLED
+                || portal.status() == io.multiverseportals.model.PortalStatus.BINDING
+                || portal.status() == io.multiverseportals.model.PortalStatus.BIND_FAILED
+                || portal.status() == io.multiverseportals.model.PortalStatus.PENDING_PAIR) {
+            return;
+        }
+        if (portal.type() == PortalType.MULTI && !portal.hasBoundDestination()) {
+            return;
+        }
+        if (portal.type() == PortalType.AWAY && !portal.hasAwayDestination()) {
+            return;
+        }
+        World world = Bukkit.getWorld(portal.frame().world());
+        if (world == null || !world.isChunkLoaded(portal.frame().x() >> 4, portal.frame().z() >> 4)) {
+            return;
+        }
+        Block sign = world.getBlockAt(portal.frame().x(), portal.frame().y(), portal.frame().z());
+        FrameDetector.Scan scan = FrameDetector.scan(sign, config.maxFrameRadius(), config.maxInterior());
+        if (!scan.closed() || scan.interior().isEmpty()) {
+            return;
+        }
+        fillOpening(portal.id(), world, scan.interior(), scan.axis());
     }
 
     public void remove(String portalId) {
@@ -191,9 +276,29 @@ public final class PortalMatter implements Listener {
     public void refreshAll(Iterable<Portal> portals) {
         Bukkit.getScheduler().runTask(plugin, () -> {
             for (Portal p : portals) {
+                World w = Bukkit.getWorld(p.frame().world());
+                if (w != null) {
+                    w.getChunkAt(p.frame().x() >> 4, p.frame().z() >> 4);
+                }
                 refresh(p);
             }
         });
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onChunkLoad(ChunkLoadEvent event) {
+        World world = event.getWorld();
+        int cx = event.getChunk().getX();
+        int cz = event.getChunk().getZ();
+        for (Portal p : plugin.database().listPortals()) {
+            if (!world.getName().equals(p.frame().world())) {
+                continue;
+            }
+            if ((p.frame().x() >> 4) != cx || (p.frame().z() >> 4) != cz) {
+                continue;
+            }
+            ensureSheet(p);
+        }
     }
 
     public boolean isMatterBlock(Block block) {
@@ -236,7 +341,8 @@ public final class PortalMatter implements Listener {
                 var local = locals.findById(id).orElse(null);
                 if (local != null) {
                     Block sign = world.getBlockAt(local.x(), local.y(), local.z());
-                    return WoolFrame.arrivalLocation(sign, plugin.pluginConfig().maxFrameRadius());
+                    return WoolFrame.arrivalLocation(sign, plugin.pluginConfig().maxFrameRadius(),
+                            plugin.pluginConfig().maxInterior());
                 }
             }
         }
@@ -483,7 +589,7 @@ public final class PortalMatter implements Listener {
             for (int dy = -1; dy <= 2; dy++) {
                 for (int dz = -2; dz <= 2; dz++) {
                     Block b = world.getBlockAt(x + dx, y + dy, z + dz);
-                    if (b.getType() == Material.NETHER_PORTAL && isMatterBlock(b)) {
+                    if (isMatterBlock(b)) {
                         return true;
                     }
                 }
@@ -493,6 +599,16 @@ public final class PortalMatter implements Listener {
     }
 
     private void spawnMatterBlock(World world, Location cell, Material look, Axis axis, String portalId) {
+        Block block = world.getBlockAt(cell.getBlockX(), cell.getBlockY(), cell.getBlockZ());
+        if (!FrameDetector.isPassable(block.getType()) && block.getType() != Material.NETHER_PORTAL) {
+            return;
+        }
+        if (block.getType() == Material.NETHER_PORTAL) {
+            block.setType(Material.AIR, false);
+        }
+        String key = cellKey(block);
+        portalByCell.put(key, portalId);
+        cellsByPortal.computeIfAbsent(portalId, id -> new HashSet<>()).add(key);
         Location spawnAt = cell.toBlockLocation();
         BlockData data = look.createBlockData();
         if (data instanceof Orientable orientable) {
@@ -516,9 +632,39 @@ public final class PortalMatter implements Listener {
                     new Vector3f(s, s, s),
                     new AxisAngle4f(0, 0, 1, 0)
             ));
-            display.setViewRange(64f);
+            display.setViewRange(128f);
             display.setShadowStrength(0f);
         });
+    }
+
+    /**
+     * Vanilla nether-portal blocks only keep a filled rectangle: interior 2–21 wide,
+     * 3–21 high, 1 thick. Circles and anything larger use BlockDisplay.
+     */
+    static boolean fitsVanillaNetherSheet(List<Location> cells) {
+        if (cells == null || cells.isEmpty()) {
+            return false;
+        }
+        int minX = Integer.MAX_VALUE, maxX = Integer.MIN_VALUE;
+        int minY = Integer.MAX_VALUE, maxY = Integer.MIN_VALUE;
+        int minZ = Integer.MAX_VALUE, maxZ = Integer.MIN_VALUE;
+        for (Location c : cells) {
+            minX = Math.min(minX, c.getBlockX());
+            maxX = Math.max(maxX, c.getBlockX());
+            minY = Math.min(minY, c.getBlockY());
+            maxY = Math.max(maxY, c.getBlockY());
+            minZ = Math.min(minZ, c.getBlockZ());
+            maxZ = Math.max(maxZ, c.getBlockZ());
+        }
+        int dx = maxX - minX + 1;
+        int dy = maxY - minY + 1;
+        int dz = maxZ - minZ + 1;
+        int thick = Math.min(dx, dz);
+        int width = Math.max(dx, dz);
+        if (thick != 1 || width < 2 || width > 21 || dy < 3 || dy > 21) {
+            return false;
+        }
+        return cells.size() == (long) width * dy;
     }
 
     private static String cellKey(Block block) {
@@ -574,40 +720,12 @@ public final class PortalMatter implements Listener {
     public static List<Location> findOpeningCells(Block sign, int maxRadius) {
         FrameDetector.Scan scan = FrameDetector.scan(sign, maxRadius);
         if (scan.closed() && !scan.interior().isEmpty()) {
-            int cap = Math.max(24, maxRadius * maxRadius);
+            int cap = Math.max(24, (2 * maxRadius + 1) * (2 * maxRadius + 1));
             if (scan.interior().size() <= cap) {
                 return new ArrayList<>(scan.interior());
             }
             return new ArrayList<>(scan.interior().subList(0, cap));
         }
         return List.of();
-    }
-
-    /** Air below the lintel in the sign plane — never above, never a neighbour's hole. */
-    private static List<Location> fallbackOpening(Block sign) {
-        List<Location> out = new ArrayList<>();
-        BlockFace facing = BlockFace.NORTH;
-        if (sign.getBlockData() instanceof WallSign wall) {
-            facing = wall.getFacing();
-        } else if (sign.getBlockData() instanceof Directional dir) {
-            facing = dir.getFacing();
-        }
-        BlockFace into = facing.getOppositeFace();
-        Block base = sign.getRelative(into);
-        boolean xAxis = into == BlockFace.NORTH || into == BlockFace.SOUTH;
-        for (int h = 1; h <= 3; h++) {
-            for (int w = -1; w <= 1; w++) {
-                Block cell;
-                if (xAxis) {
-                    cell = base.getWorld().getBlockAt(base.getX() + w, base.getY() - h, base.getZ());
-                } else {
-                    cell = base.getWorld().getBlockAt(base.getX(), base.getY() - h, base.getZ() + w);
-                }
-                if (FrameDetector.isPassable(cell.getType())) {
-                    out.add(cell.getLocation());
-                }
-            }
-        }
-        return out;
     }
 }

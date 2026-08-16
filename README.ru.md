@@ -102,7 +102,7 @@ server:
 docker run -d --name minecraft_mvp --network host -e EULA=TRUE -v mvp-data:/data mvsews/mvp && IP=$(curl -fsS https://api.ipify.org) && echo "Server ready — connect Java $IP:25565 | Bedrock $IP:19132"
 ```
 
-После первого запуска подожди пару минут (скачивается Paper и генерируется мир). В конце команда напечатает IP, по которому заходить. Имя сервера, если не задать, выберется само (например, «Peppery Bridge»). При каждом **перезапуске контейнера** подтягиваются свежие Geyser/Via* и MultiversePortals, если на https://mp.mvse.ws/version.json версия новее (`-e UPDATE_MVP=false` чтобы не трогать плагин).
+После первого запуска подожди пару минут (скачивается Paper и генерируется мир). В конце команда напечатает IP, по которому заходить. Имя сервера, если не задать, выберется само (например, «Peppery Bridge»). При каждом **старте/рестарте контейнера** качаются свежие **Geyser, Floodgate, ViaVersion, ViaBackwards, ViaRewind** (старые Java-клиенты) и **MultiversePortals**, если на https://mp.mvse.ws/version.json версия новее (`-e UPDATE_BEDROCK_BRIDGE=false` / `-e UPDATE_MVP=false` чтобы не трогать).
 
 **Полезные переменные** — добавляй рядом с `-e EULA=TRUE`:
 
@@ -115,7 +115,7 @@ docker run -d --name minecraft_mvp --network host -e EULA=TRUE -v mvp-data:/data
 | `BEDROCK_PORT` | `19132` | UDP-порт Geyser |
 | `MEMORY` | `1G` | память JVM, например `-e MEMORY=2G` |
 | `FLOODGATE_KEY_B64` | (нет) | общий Floodgate `key.pem` в base64 — если Bedrock-игроки прыгают между «своими» серверами |
-| `UPDATE_BEDROCK_BRIDGE` | `true` | при старте обновить Geyser / Floodgate / Via* |
+| `UPDATE_BEDROCK_BRIDGE` | `true` | при старте обновить Geyser / Floodgate / ViaVersion / ViaBackwards / ViaRewind |
 | `UPDATE_MVP` | `true` | при старте заменить MultiversePortals, если на сайте версия новее |
 
 Пример со своим именем и доменом:

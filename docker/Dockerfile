@@ -43,8 +43,11 @@ RUN set -euo pipefail \
       | jq -r '.result[0].downloads.PAPER.downloadUrl')" \
  && VB_URL="$(curl -fsSL 'https://hangar.papermc.io/api/v1/projects/ViaVersion/ViaBackwards/versions?limit=1' \
       | jq -r '.result[0].downloads.PAPER.downloadUrl')" \
+ && VR_URL="$(curl -fsSL 'https://hangar.papermc.io/api/v1/projects/ViaVersion/ViaRewind/versions?limit=1' \
+      | jq -r '.result[0].downloads.PAPER.downloadUrl')" \
  && curl -fsSL -o ViaVersion.jar "$VV_URL" \
  && curl -fsSL -o ViaBackwards.jar "$VB_URL" \
+ && curl -fsSL -o ViaRewind.jar "$VR_URL" \
  && ls -la /plugins
 
 COPY ${MVP_JAR} /plugins/MultiversePortals.jar

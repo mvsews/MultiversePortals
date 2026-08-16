@@ -50,7 +50,7 @@ Hub plugin   --------->  Universal database
 
 - Landing (idea + jar + live graph): [https://mp.mvse.ws/](https://mp.mvse.ws/)
 - Server list (reputation / hops): [https://mp.mvse.ws/list](https://mp.mvse.ws/list)
-- Versioned jar: [https://mp.mvse.ws/download/MultiversePortals-1.2.17.jar](https://mp.mvse.ws/download/MultiversePortals-1.2.17.jar)  
+- Versioned jar: [https://mp.mvse.ws/download/MultiversePortals-1.2.23.jar](https://mp.mvse.ws/download/MultiversePortals-1.2.23.jar)  
   (stable alias: `/download/MultiversePortals.jar`)
 - Version metadata: [https://mp.mvse.ws/version.json](https://mp.mvse.ws/version.json)
 - API: `https://mp.mvse.ws/mvp/v1`

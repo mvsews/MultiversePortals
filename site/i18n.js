@@ -26,7 +26,7 @@ window.MVP_I18N = {
     buildLead: "Three kinds: to another server, to another biome (Away), or wool between spots on this world. Walk into the purple opening — no pressure plate.",
     buildCrossTitle: "To another server",
     buildCrossIntro:
-      "Build a closed frame like a Nether portal (opening <strong>2×3</strong>, any solid blocks). Hang the <strong>sign on the right jamb</strong> (looking at the portal). The hole lights up purple. Walk in to travel — a pressure plate is not needed.",
+      "Build a closed frame like a Nether portal (a <strong>1×2</strong> peephole is enough; vanilla is <strong>2×3</strong>, giant rings work too). Hang the <strong>sign on the right jamb</strong> (looking at the portal). The hole lights up purple. Walk in to travel — a pressure plate is not needed.",
     schematicFront: "Front — sign on the right, purple sheet inside",
     schematicFrontKey:
       '<span class="key key--stone"></span> any solid block &nbsp; <span class="key key--sheet"></span> walk in here &nbsp; <span class="key key--sign"></span> sign',
@@ -198,7 +198,7 @@ window.MVP_I18N = {
     buildLead: "Три вида: на другой сервер, в другой биом (Away) или шерсть между точками в этом мире. Зайди в фиолетовый проём — нажимная плита не нужна.",
     buildCrossTitle: "На другой сервер",
     buildCrossIntro:
-      "Собери замкнутую рамку как у портала в Ад (проём <strong>2×3</strong>, любые твёрдые блоки). Повесь <strong>табличку на правую стойку</strong> (если смотреть на портал). Дыра загорается фиолетовым. Чтобы уйти — зайди внутрь, плита не нужна.",
+      "Собери замкнутую рамку как у портала в Ад (хватит глазка <strong>1×2</strong>; обычный проём — <strong>2×3</strong>, большое кольцо тоже можно). Повесь <strong>табличку на правую стойку</strong> (если смотреть на портал). Дыра загорается фиолетовым. Чтобы уйти — зайди внутрь, плита не нужна.",
     schematicFront: "Спереди — табличка справа, фиолетовый лист в проёме",
     schematicFrontKey:
       '<span class="key key--stone"></span> любой твёрдый блок &nbsp; <span class="key key--sheet"></span> зайди сюда &nbsp; <span class="key key--sign"></span> табличка',
@@ -370,7 +370,7 @@ window.MVP_I18N = {
     buildLead: "三种：去别的服务器、去本服另一个群系（Away），或用羊毛连接本服地点。走进紫色门洞即可，不需要压力板。",
     buildCrossTitle: "去别的服务器",
     buildCrossIntro:
-      "搭一个像下界门一样的闭合框架（开口 <strong>2×3</strong>，任意实心方块）。把<strong>告示牌挂在右侧立柱</strong>（面向传送门时）。洞会亮起紫色。走进去即可传送——不需要压力板。",
+      "搭一个像下界门一样的闭合框架（<strong>1×2</strong> 窥孔就够；常见是 <strong>2×3</strong>，大圆环也可以）。把<strong>告示牌挂在右侧立柱</strong>（面向传送门时）。洞会亮起紫色。走进去即可传送——不需要压力板。",
     schematicFront: "正面 — 告示牌在右侧，紫色门面在开口里",
     schematicFrontKey:
       '<span class="key key--stone"></span> 任意实心方块 &nbsp; <span class="key key--sheet"></span> 从这里走进去 &nbsp; <span class="key key--sign"></span> 告示牌',

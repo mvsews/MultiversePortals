@@ -33,13 +33,24 @@ fetch() {
   log "updated ${label} ($(wc -c < "$dest" | tr -d ' ') bytes)"
 }
 
+# Latest Hangar PAPER jar (snapshots included — that's the freshest protocol support).
 hangar_paper_url() {
   local project="$1"
-  curl -fsSL --max-time 30 \
-    "https://hangar.papermc.io/api/v1/projects/ViaVersion/${project}/versions?limit=1" \
-    | tr '"' '\n' \
-    | grep -E "^https://hangarcdn.papermc.io/plugins/ViaVersion/${project}/.+/PAPER/.+\\.jar$" \
-    | head -1
+  local json url=""
+  json="$(curl -fsSL --retry 2 --max-time 30 \
+    "https://hangar.papermc.io/api/v1/projects/ViaVersion/${project}/versions?limit=1" || true)"
+  if [[ -z "$json" ]]; then
+    return 0
+  fi
+  if command -v jq >/dev/null 2>&1; then
+    url="$(printf '%s' "$json" | jq -r '.result[0].downloads.PAPER.downloadUrl // empty' 2>/dev/null || true)"
+  fi
+  if [[ -z "$url" || "$url" == "null" ]]; then
+    url="$(printf '%s' "$json" \
+      | grep -oE "https://hangarcdn.papermc.io/plugins/ViaVersion/${project}/[^\"[:space:]]+\\.jar" \
+      | head -1 || true)"
+  fi
+  printf '%s' "$url"
 }
 
 # True if $1 is a newer X.Y.Z than $2 (missing parts count as 0).
@@ -128,7 +139,7 @@ update_mvp() {
 sync_image_plugins() {
   [[ -d /plugins ]] || return 0
   local f
-  for f in Geyser-Spigot.jar floodgate-spigot.jar ViaVersion.jar ViaBackwards.jar MultiversePortals.jar; do
+  for f in Geyser-Spigot.jar floodgate-spigot.jar ViaVersion.jar ViaBackwards.jar ViaRewind.jar MultiversePortals.jar; do
     if [[ -f "$PLUGINS/$f" ]]; then
       cp -a "$PLUGINS/$f" "/plugins/$f" 2>/dev/null || true
     fi
@@ -139,33 +150,35 @@ sync_image_plugins() {
   done
 }
 
+fetch_via() {
+  local project="$1" dest="$2" label="$3"
+  local url
+  url="$(hangar_paper_url "$project" || true)"
+  if [[ -n "$url" ]]; then
+    fetch "$url" "$dest" "$label"
+  else
+    log "skip ${label}: Hangar URL not resolved"
+  fi
+}
+
 if [[ "${UPDATE_BEDROCK_BRIDGE:-true}" == "true" ]]; then
-  log "fetching latest Geyser + Floodgate + Via*"
+  log "fetching latest Geyser + Floodgate + ViaVersion + ViaBackwards + ViaRewind"
   fetch \
     "https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/spigot" \
     "$PLUGINS/Geyser-Spigot.jar" "Geyser-Spigot"
   fetch \
     "https://download.geysermc.org/v2/projects/floodgate/versions/latest/builds/latest/downloads/spigot" \
     "$PLUGINS/floodgate-spigot.jar" "floodgate"
-
-  vv="$(hangar_paper_url ViaVersion || true)"
-  vb="$(hangar_paper_url ViaBackwards || true)"
-  if [[ -n "$vv" ]]; then
-    fetch "$vv" "$PLUGINS/ViaVersion.jar" "ViaVersion"
-  else
-    log "skip ViaVersion: Hangar URL not resolved"
-  fi
-  if [[ -n "$vb" ]]; then
-    fetch "$vb" "$PLUGINS/ViaBackwards.jar" "ViaBackwards"
-  else
-    log "skip ViaBackwards: Hangar URL not resolved"
-  fi
+  fetch_via ViaVersion "$PLUGINS/ViaVersion.jar" "ViaVersion"
+  fetch_via ViaBackwards "$PLUGINS/ViaBackwards.jar" "ViaBackwards"
+  fetch_via ViaRewind "$PLUGINS/ViaRewind.jar" "ViaRewind"
 
   chown 1000:1000 \
     "$PLUGINS/Geyser-Spigot.jar" \
     "$PLUGINS/floodgate-spigot.jar" \
     "$PLUGINS/ViaVersion.jar" \
-    "$PLUGINS/ViaBackwards.jar" 2>/dev/null || true
+    "$PLUGINS/ViaBackwards.jar" \
+    "$PLUGINS/ViaRewind.jar" 2>/dev/null || true
 else
   log "UPDATE_BEDROCK_BRIDGE=false — keeping Geyser/Via jars"
 fi

@@ -137,6 +137,7 @@ public final class MvpCommand implements CommandExecutor, TabCompleter {
             case "rep", "reputation" -> repCmd(sender, args);
             case "lang", "language" -> langCmd(sender, args);
             case "local" -> localCmd(sender, args);
+            case "inspect", "blocks", "map" -> WorldInspect.run(plugin, sender, args);
             default -> help(sender);
         }
         return true;
@@ -1315,6 +1316,9 @@ public final class MvpCommand implements CommandExecutor, TabCompleter {
         msg(sender, "<white>/mvp items</white> <gray>inventory export/import</gray>");
         msg(sender, "<white>/mvp settings</white> <gray>map / guests / inventory / create / types</gray>");
         msg(sender, "<white>/mvp update</white> <gray>скачать обновление (admin)</gray>");
+        if (sender.hasPermission("multiverseportals.admin")) {
+            msg(sender, "<white>/mvp inspect</white> <gray>id | here | world x y z [r] — срез блоков (RCON)</gray>");
+        }
     }
 
     private java.util.Map<String, java.util.List<String>> collectCommentSignsForCmd() {
@@ -1337,7 +1341,20 @@ public final class MvpCommand implements CommandExecutor, TabCompleter {
         if (args.length == 1) {
             return filter(args[0], "help", "status", "stats", "info", "version", "reload", "update", "settings", "items", "ready", "scanner",
                     "ingress", "deny", "rep", "hops", "lang", "trust", "peers", "policy", "create", "pair", "multi",
-                    "list", "delete", "score", "registry", "bindpreview", "bindorder", "local");
+                    "list", "delete", "score", "registry", "bindpreview", "bindorder", "local",
+                    "inspect", "blocks", "map");
+        }
+        if (args.length == 2 && (args[0].equalsIgnoreCase("inspect")
+                || args[0].equalsIgnoreCase("blocks") || args[0].equalsIgnoreCase("map"))) {
+            List<String> opts = new ArrayList<>();
+            opts.add("here");
+            for (var w : Bukkit.getWorlds()) {
+                opts.add(w.getName());
+            }
+            for (Portal p : db.listPortals()) {
+                opts.add(p.id().substring(0, 8));
+            }
+            return filter(args[1], opts.toArray(String[]::new));
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("local")) {
             return filter(args[1], "list", "import-colorportals");

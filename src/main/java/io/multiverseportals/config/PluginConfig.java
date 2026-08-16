@@ -1,5 +1,6 @@
 package io.multiverseportals.config;
 
+import io.multiverseportals.i18n.EffectsCopy;
 import io.multiverseportals.i18n.Messages;
 import io.multiverseportals.model.PeerPolicy;
 import org.bukkit.configuration.ConfigurationSection;
@@ -130,6 +131,29 @@ public final class PluginConfig {
         if (changed) {
             plugin.saveConfig();
             reload();
+        }
+        return changed;
+    }
+
+    /**
+     * Old installs kept {@code effects.title}/{@code subtitle} from the plate era.
+     * Those override lang files for every player — clear them so HUD follows locale.
+     */
+    public boolean clearStaleEffectsCopy() {
+        boolean changed = false;
+        String title = plugin.getConfig().getString("effects.title", "");
+        String subtitle = plugin.getConfig().getString("effects.subtitle", "");
+        if (EffectsCopy.isStaleOverride(title)) {
+            plugin.getConfig().set("effects.title", "");
+            changed = true;
+        }
+        if (EffectsCopy.isStaleOverride(subtitle)) {
+            plugin.getConfig().set("effects.subtitle", "");
+            changed = true;
+        }
+        if (changed) {
+            plugin.saveConfig();
+            plugin.getLogger().info("Cleared old effects.title/subtitle (plate copy); HUD uses lang files per player.");
         }
         return changed;
     }
@@ -637,19 +661,32 @@ public final class PluginConfig {
     }
 
     public String effectsTitle() {
+        return effectsTitle(null);
+    }
+
+    public String effectsTitle(org.bukkit.entity.Player player) {
         String fromCfg = plugin.getConfig().getString("effects.title", "");
-        if (fromCfg != null && !fromCfg.isBlank()) {
+        if (isCustomEffectsLine(fromCfg)) {
             return fromCfg;
         }
-        return message("effects-title");
+        return message(player, "effects-title");
     }
 
     public String effectsSubtitle() {
+        return effectsSubtitle(null);
+    }
+
+    public String effectsSubtitle(org.bukkit.entity.Player player) {
         String fromCfg = plugin.getConfig().getString("effects.subtitle", "");
-        if (fromCfg != null && !fromCfg.isBlank()) {
+        if (isCustomEffectsLine(fromCfg)) {
             return fromCfg;
         }
-        return message("effects-subtitle");
+        return message(player, "effects-subtitle");
+    }
+
+    /** Non-empty config line that is not leftover plate-era stock copy. */
+    private static boolean isCustomEffectsLine(String fromCfg) {
+        return fromCfg != null && !fromCfg.isBlank() && !EffectsCopy.isStaleOverride(fromCfg);
     }
 
     /** Fill portal opening: nether uses real animated portal blocks; end/gateway use BlockDisplay. */
@@ -806,7 +843,7 @@ public final class PluginConfig {
         return plugin.getConfig().getBoolean("scanner.confirm-before-transfer", true);
     }
 
-    /** If player returns within this many seconds after transfer — blacklist dest. */
+    /** No-portal dest: player back within this many seconds = refused. Dest with a portal uses hop/session. */
     public int scannerBounceBackSeconds() {
         return Math.max(30, plugin.getConfig().getInt("scanner.bounce-back-seconds", 120));
     }
@@ -1090,7 +1127,15 @@ public final class PluginConfig {
 
     /** Chebyshev radius from the control sign for a closed portal opening. */
     public int maxFrameRadius() {
-        return Math.max(4, Math.min(48, plugin.getConfig().getInt("portals.max-frame-radius", 24)));
+        return Math.max(4, Math.min(96, plugin.getConfig().getInt("portals.max-frame-radius", 64)));
+    }
+
+    /**
+     * Longest side of the air opening (width or height), in blocks.
+     * Vanilla 2×3 is 3. Default 30. A hole larger than this is not a portal.
+     */
+    public int maxInterior() {
+        return Math.max(3, Math.min(96, plugin.getConfig().getInt("portals.max-interior", 12)));
     }
 
     /**

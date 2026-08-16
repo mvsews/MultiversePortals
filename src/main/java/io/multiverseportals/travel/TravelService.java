@@ -387,7 +387,8 @@ public final class TravelService {
         }
         pendingTransfers.put(player.getUniqueId(), new PendingTransfer(
                 result.host(), result.javaPort(), result.serverId(), session.portal.id(),
-                System.currentTimeMillis(), null, pendingLabel(session.portal, result.host())));
+                System.currentTimeMillis(), null, pendingLabel(session.portal, result.host()),
+                destHasPortal(result.toPortalId(), result.returnCapable())));
         depart(player, session.portal, result.host(), result.port(), result.serverId(),
                 result.toPortalId(), result.type(), result.returnCapable());
     }
@@ -481,13 +482,20 @@ public final class TravelService {
 
     /** Player came back soon after a portal transfer → dest was not actually joinable. */
     public void notePossibleBounceBack(Player player) {
-        PendingTransfer p = pendingTransfers.remove(player.getUniqueId());
+        PendingTransfer p = pendingTransfers.get(player.getUniqueId());
         if (p == null) {
             return;
         }
         long age = System.currentTimeMillis() - p.atMs;
         long windowMs = config.scannerBounceBackSeconds() * 1000L;
         if (age > windowMs) {
+            return;
+        }
+        // Dest has a portal: they may walk back through it. Wait for dest ARRIVED/REJECTED.
+        if (p.destHasPortal) {
+            return;
+        }
+        if (!pendingTransfers.remove(player.getUniqueId(), p)) {
             return;
         }
         if (config.scannerMemoryEnabled()) {
@@ -913,7 +921,8 @@ public final class TravelService {
                 java.util.function.Consumer<ResolveResult> go = dest -> {
                     pendingTransfers.put(player.getUniqueId(), new PendingTransfer(
                             dest.host(), dest.javaPort(), dest.serverId(), portal.id(),
-                            System.currentTimeMillis(), null, pendingLabel(portal, dest.host())));
+                            System.currentTimeMillis(), null, pendingLabel(portal, dest.host()),
+                            destHasPortal(dest.toPortalId(), dest.returnCapable())));
                     depart(player, portal, dest.host(), dest.port(), dest.serverId(),
                             dest.toPortalId(), dest.type(), dest.returnCapable());
                 };
@@ -1133,10 +1142,10 @@ public final class TravelService {
                 portal.id(),
                 System.currentTimeMillis(),
                 sessionId,
-                pendingLabel(portal, host)
+                pendingLabel(portal, host),
+                destHasPortal(toPortalId, returnCapable)
         ));
-        scheduleDepartSuccess(player.getUniqueId(), sessionId, toServerId, host,
-                prev != null && prev.javaPort > 0 ? prev.javaPort : port);
+        scheduleDepartSuccess(player.getUniqueId(), sessionId);
 
         if (registry != null && registry.enabled()) {
             registry.saveTravel(
@@ -1831,20 +1840,108 @@ public final class TravelService {
         return Optional.ofNullable(best);
     }
 
-    private void scheduleDepartSuccess(UUID uuid, String sessionId, String toServerId, String host, int javaPort) {
-        long ticks = 20L * Math.max(30, config.scannerBounceBackSeconds()) + 100L;
-        Bukkit.getScheduler().runTaskLater(plugin, () -> {
-            PendingTransfer still = pendingTransfers.get(uuid);
-            if (still == null || sessionId == null || !sessionId.equals(still.sessionId)) {
-                return;
+    private void scheduleDepartSuccess(UUID uuid, String sessionId) {
+        long ticks = 20L * Math.max(30, config.scannerBounceBackSeconds());
+        Bukkit.getScheduler().runTaskLater(plugin, () ->
+                Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> settleDepartTimer(uuid, sessionId)),
+                ticks);
+    }
+
+    /**
+     * Dest with a portal reported ARRIVED / REJECTED via catalog hop. Settles immediately.
+     */
+    public void onDestHopReport(HopEvent event) {
+        if (event == null) {
+            return;
+        }
+        String self = config.serverId();
+        if (self != null && event.fromServer() != null
+                && !self.equalsIgnoreCase(event.fromServer())) {
+            return;
+        }
+        String uuidStr = event.playerUuid();
+        if (uuidStr == null || uuidStr.isBlank()) {
+            return;
+        }
+        UUID uuid;
+        try {
+            uuid = UUID.fromString(uuidStr);
+        } catch (IllegalArgumentException e) {
+            return;
+        }
+        PendingTransfer p = pendingTransfers.get(uuid);
+        if (p == null || !p.destHasPortal) {
+            return;
+        }
+        TransferSettle.Outcome out = TransferSettle.decide(
+                true, Bukkit.getPlayer(uuid) != null, null, event.outcome());
+        settlePending(uuid, p, out);
+    }
+
+    private void settleDepartTimer(UUID uuid, String sessionId) {
+        PendingTransfer still = pendingTransfers.get(uuid);
+        if (still == null || sessionId == null || !sessionId.equals(still.sessionId)) {
+            return;
+        }
+        Player online = Bukkit.getPlayer(uuid);
+        boolean playerBack = online != null && online.isOnline();
+        String travelSt = null;
+        String hop = null;
+        if (registry != null && registry.enabled()) {
+            travelSt = registry.travelStatus(sessionId).orElse(null);
+            hop = registry.recentHopOutcome(config.serverId(), uuid.toString(), still.atMs - 5_000L)
+                    .orElse(null);
+        }
+        TransferSettle.Outcome out = TransferSettle.decide(still.destHasPortal, playerBack, travelSt, hop);
+        settlePending(uuid, still, out);
+    }
+
+    private void settlePending(UUID uuid, PendingTransfer p, TransferSettle.Outcome outcome) {
+        if (p == null || outcome == null) {
+            return;
+        }
+        if (!pendingTransfers.remove(uuid, p)) {
+            return;
+        }
+        if (outcome == TransferSettle.Outcome.REFUSE) {
+            notePeer(uuid, null, PeerEdge.Kind.FAILED, p.toServerId, p.host, p.javaPort);
+            if (config.scannerMemoryEnabled() && p.host != null && p.javaPort > 0) {
+                db.recordProbe(p.host, p.javaPort, Database.ProbeStatus.BAD_JOIN,
+                        null, null, null, null, null, null);
             }
-            pendingTransfers.remove(uuid);
-            Player p = Bukkit.getPlayer(uuid);
-            if (p != null && p.isOnline()) {
-                return;
+            final String sessionId = p.sessionId;
+            final String playerUuid = uuid.toString();
+            final String fromServer = config.serverId();
+            if (registry != null && registry.enabled()) {
+                Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+                    try {
+                        registry.recordTransferOutcome(p.host, p.javaPort, false, "bounce");
+                        if (sessionId != null && !sessionId.isBlank()) {
+                            registry.markTravelBounced(sessionId);
+                        } else {
+                            registry.markRecentTravelBounced(playerUuid, fromServer,
+                                    config.scannerBounceBackSeconds() * 1000L);
+                        }
+                    } catch (Exception e) {
+                        plugin.getLogger().warning("settle refuse: " + e.getMessage());
+                    }
+                });
             }
-            notePeer(uuid, null, PeerEdge.Kind.DEPARTED, toServerId, host, javaPort);
-        }, ticks);
+            plugin.getLogger().warning("Transfer refused " + p.host + ":" + p.javaPort
+                    + (p.destHasPortal ? " (dest portal)" : " (no dest portal, bounce)"));
+            if (p.portalId != null && plugin.portalBindService() != null) {
+                Bukkit.getScheduler().runTask(plugin, () ->
+                        plugin.portalBindService().rebindAfterBounce(p.portalId, p.host, p.javaPort));
+            }
+            return;
+        }
+        notePeer(uuid, null, PeerEdge.Kind.DEPARTED, p.toServerId, p.host, p.javaPort);
+        plugin.getLogger().info("Transfer accepted " + p.host + ":" + p.javaPort
+                + " — +1 reputation");
+    }
+
+    private static boolean destHasPortal(String toPortalId, boolean returnCapable) {
+        return returnCapable || (toPortalId != null && !toPortalId.isBlank());
     }
 
     private void notePeer(Player player, PeerEdge.Kind kind, String serverId, String host, int port) {
@@ -1862,10 +1959,22 @@ public final class TravelService {
         if (!hasId && !hasHost) {
             return;
         }
-        db.recordPeerEvent(kind, serverId, host, port,
-                uuid == null ? null : uuid.toString(), name);
-        if (plugin.catalogShareService() != null) {
-            plugin.catalogShareService().pushNowAsync();
+        final String playerUuid = uuid == null ? null : uuid.toString();
+        final String playerName = name;
+        final PeerEdge.Kind eventKind = kind;
+        final String sid = serverId;
+        final String h = host;
+        final int p = port;
+        Runnable write = () -> {
+            db.recordPeerEvent(eventKind, sid, h, p, playerUuid, playerName);
+            if (plugin.catalogShareService() != null) {
+                plugin.catalogShareService().pushNowAsync();
+            }
+        };
+        if (Bukkit.isPrimaryThread()) {
+            Bukkit.getScheduler().runTaskAsynchronously(plugin, write);
+        } else {
+            write.run();
         }
     }
 
@@ -1897,7 +2006,8 @@ public final class TravelService {
             String portalId,
             long atMs,
             String sessionId,
-            String label
+            String label,
+            boolean destHasPortal
     ) {}
 
     private record ResolveResult(

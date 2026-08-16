@@ -48,10 +48,14 @@ public final class WoolFrame {
     }
 
     public static FrameDetector.Scan scan(Block signBlock, int maxRadius) {
+        return scan(signBlock, maxRadius, Integer.MAX_VALUE);
+    }
+
+    public static FrameDetector.Scan scan(Block signBlock, int maxRadius, int maxInterior) {
         if (signBlock == null) {
             return FrameDetector.Scan.open();
         }
-        return FrameDetector.scan(signBlock, maxRadius);
+        return FrameDetector.scan(signBlock, maxRadius, maxInterior);
     }
 
     public static boolean frameIsComplete(Block signBlock) {
@@ -59,11 +63,15 @@ public final class WoolFrame {
     }
 
     public static boolean frameIsComplete(Block signBlock, int maxRadius) {
+        return frameIsComplete(signBlock, maxRadius, Integer.MAX_VALUE);
+    }
+
+    public static boolean frameIsComplete(Block signBlock, int maxRadius, int maxInterior) {
         DyeColor color = colorOfFrame(signBlock).orElse(null);
         if (color == null) {
             return false;
         }
-        FrameDetector.Scan scanned = scan(signBlock, maxRadius);
+        FrameDetector.Scan scanned = scan(signBlock, maxRadius, maxInterior);
         if (!scanned.closed() || scanned.interior().isEmpty() || scanned.frameBlocks().size() < 6) {
             return false;
         }
@@ -111,8 +119,12 @@ public final class WoolFrame {
     }
 
     public static List<Block> interiorBlocks(Block signBlock, int maxRadius) {
+        return interiorBlocks(signBlock, maxRadius, Integer.MAX_VALUE);
+    }
+
+    public static List<Block> interiorBlocks(Block signBlock, int maxRadius, int maxInterior) {
         List<Block> out = new ArrayList<>();
-        for (Location loc : scan(signBlock, maxRadius).interior()) {
+        for (Location loc : scan(signBlock, maxRadius, maxInterior).interior()) {
             out.add(loc.getBlock());
         }
         return out;
@@ -123,7 +135,11 @@ public final class WoolFrame {
     }
 
     public static Axis sheetAxis(Block signBlock, int maxRadius) {
-        FrameDetector.Scan scanned = scan(signBlock, maxRadius);
+        return sheetAxis(signBlock, maxRadius, Integer.MAX_VALUE);
+    }
+
+    public static Axis sheetAxis(Block signBlock, int maxRadius, int maxInterior) {
+        FrameDetector.Scan scanned = scan(signBlock, maxRadius, maxInterior);
         if (scanned.closed()) {
             return scanned.axis();
         }
@@ -139,13 +155,17 @@ public final class WoolFrame {
     }
 
     public static boolean standingInOpening(Location loc, Block signBlock, int maxRadius) {
+        return standingInOpening(loc, signBlock, maxRadius, Integer.MAX_VALUE);
+    }
+
+    public static boolean standingInOpening(Location loc, Block signBlock, int maxRadius, int maxInterior) {
         if (loc == null || loc.getWorld() == null || signBlock == null) {
             return false;
         }
         if (!loc.getWorld().equals(signBlock.getWorld())) {
             return false;
         }
-        FrameDetector.Scan scanned = scan(signBlock, maxRadius);
+        FrameDetector.Scan scanned = scan(signBlock, maxRadius, maxInterior);
         int x = loc.getBlockX();
         int y = loc.getBlockY();
         int z = loc.getBlockZ();
@@ -153,6 +173,10 @@ public final class WoolFrame {
     }
 
     public static boolean containsBlock(Block signBlock, Block target, int maxRadius) {
+        return containsBlock(signBlock, target, maxRadius, Integer.MAX_VALUE);
+    }
+
+    public static boolean containsBlock(Block signBlock, Block target, int maxRadius, int maxInterior) {
         if (signBlock == null || target == null) {
             return false;
         }
@@ -162,7 +186,7 @@ public final class WoolFrame {
         if (signBlock.getX() == target.getX() && signBlock.getY() == target.getY() && signBlock.getZ() == target.getZ()) {
             return true;
         }
-        FrameDetector.Scan scanned = scan(signBlock, maxRadius);
+        FrameDetector.Scan scanned = scan(signBlock, maxRadius, maxInterior);
         int x = target.getX();
         int y = target.getY();
         int z = target.getZ();
@@ -174,10 +198,14 @@ public final class WoolFrame {
     }
 
     public static Location warpLocation(Block signBlock, int maxRadius) {
+        return warpLocation(signBlock, maxRadius, Integer.MAX_VALUE);
+    }
+
+    public static Location warpLocation(Block signBlock, int maxRadius, int maxInterior) {
         if (!(signBlock.getBlockData() instanceof WallSign sign)) {
             return signBlock.getLocation().add(0.5, 0, 0.5);
         }
-        List<Location> interior = scan(signBlock, maxRadius).interior();
+        List<Location> interior = scan(signBlock, maxRadius, maxInterior).interior();
         Location warp;
         if (interior.isEmpty()) {
             warp = signBlock
@@ -213,11 +241,15 @@ public final class WoolFrame {
     }
 
     public static Location arrivalLocation(Block signBlock, int maxRadius) {
+        return arrivalLocation(signBlock, maxRadius, Integer.MAX_VALUE);
+    }
+
+    public static Location arrivalLocation(Block signBlock, int maxRadius, int maxInterior) {
         if (!(signBlock.getBlockData() instanceof WallSign sign)) {
             return signBlock.getLocation().add(0.5, -1.9, 0.5);
         }
         BlockFace face = sign.getFacing();
-        Location loc = warpLocation(signBlock, maxRadius).clone();
+        Location loc = warpLocation(signBlock, maxRadius, maxInterior).clone();
         loc.add(face.getModX() * 1.5, 0, face.getModZ() * 1.5);
         loc.setYaw(faceToYaw(face));
         for (int i = 0; i < 4; i++) {
@@ -236,7 +268,11 @@ public final class WoolFrame {
     }
 
     public static Location cartWarpLocation(Block signBlock, int maxRadius) {
-        Location warp = warpLocation(signBlock, maxRadius).clone();
+        return cartWarpLocation(signBlock, maxRadius, Integer.MAX_VALUE);
+    }
+
+    public static Location cartWarpLocation(Block signBlock, int maxRadius, int maxInterior) {
+        Location warp = warpLocation(signBlock, maxRadius, maxInterior).clone();
         if (!(signBlock.getBlockData() instanceof WallSign sign)) {
             return warp;
         }
@@ -266,11 +302,15 @@ public final class WoolFrame {
     }
 
     public static boolean looksLikeColorPortalSign(Block signBlock, int maxRadius) {
+        return looksLikeColorPortalSign(signBlock, maxRadius, Integer.MAX_VALUE);
+    }
+
+    public static boolean looksLikeColorPortalSign(Block signBlock, int maxRadius, int maxInterior) {
         if (!(signBlock.getBlockData() instanceof WallSign sign)) {
             return false;
         }
         Block key = signBlock.getRelative(sign.getFacing().getOppositeFace());
-        return isWool(key.getType()) && frameIsComplete(signBlock, maxRadius);
+        return isWool(key.getType()) && frameIsComplete(signBlock, maxRadius, maxInterior);
     }
 
     public static String colorPermKey(DyeColor color) {

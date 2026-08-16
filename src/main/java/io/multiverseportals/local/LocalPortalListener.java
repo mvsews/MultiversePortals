@@ -54,7 +54,7 @@ public final class LocalPortalListener implements Listener {
         if (!(block.getBlockData() instanceof WallSign)) {
             return;
         }
-        if (!WoolFrame.looksLikeColorPortalSign(block, config.maxFrameRadius())) {
+        if (!WoolFrame.looksLikeColorPortalSign(block, config.maxFrameRadius(), config.maxInterior())) {
             return;
         }
         // Cross-server signs take precedence
@@ -73,7 +73,7 @@ public final class LocalPortalListener implements Listener {
         try {
             channel = Integer.parseInt(chan);
         } catch (NumberFormatException e) {
-            if (WoolFrame.frameIsComplete(block, config.maxFrameRadius())) {
+            if (WoolFrame.frameIsComplete(block, config.maxFrameRadius(), config.maxInterior())) {
                 player.sendMessage(mm.deserialize(config.prefix(player) + config.message(player, "local-bad-channel")));
             }
             return;

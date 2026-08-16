@@ -29,7 +29,9 @@ public final class Messages {
             "searching-hold",
             "searching-server",
             "charge-left-plate",
-            "charge-hold"
+            "charge-hold",
+            "effects-title",
+            "effects-subtitle"
     );
 
     private final JavaPlugin plugin;
@@ -199,7 +201,8 @@ public final class Messages {
             if (have == null || have.isBlank()) {
                 disk.set(key, bundledVal);
                 added = true;
-            } else if (REFRESH_KEYS.contains(key) && bundledVal != null && !bundledVal.equals(have)) {
+            } else if (bundledVal != null && !bundledVal.equals(have)
+                    && (REFRESH_KEYS.contains(key) || EffectsCopy.isStaleOverride(have))) {
                 disk.set(key, bundledVal);
                 added = true;
             }

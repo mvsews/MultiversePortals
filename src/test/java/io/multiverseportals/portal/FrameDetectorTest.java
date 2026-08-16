@@ -123,6 +123,36 @@ class FrameDetectorTest {
     }
 
     @Test
+    void closedOneByTwoIsAPortal() {
+        String[] grid = {
+                "###",
+                "#.S",
+                "#.#",
+                "###"
+        };
+        FrameDetector.PlaneResult scan = scanAt(grid, 'S');
+        assertTrue(scan.closed());
+        assertEquals(2, scan.interior().size());
+        assertTrue(covers(scan, 1, 1, 1, 2));
+    }
+
+    @Test
+    void closedOneByTwoNextToCaveUsesThePeephole() {
+        String[] grid = {
+                "#####################",
+                "#####...............#",
+                "#.S##...............#",
+                "#.###...............#",
+                "#####...............#",
+                "#####################"
+        };
+        FrameDetector.PlaneResult scan = scanAt(grid, 'S', 24, 12);
+        assertTrue(scan.closed());
+        assertEquals(2, scan.interior().size());
+        assertTrue(covers(scan, 1, 2, 1, 2));
+    }
+
+    @Test
     void tinyPeepholeDoesNotStealTwoByThree() {
         String[] grid = {
                 "######",
@@ -137,18 +167,139 @@ class FrameDetectorTest {
         assertTrue(scan.interior().size() >= 6);
     }
 
+    @Test
+    void wideCaveWithoutDoorwayIsRejected() {
+        String[] grid = {
+                "#####################",
+                "#...................#",
+                "#...................#",
+                "#..S................#",
+                "#...................#",
+                "#...................#",
+                "#####################"
+        };
+        FrameDetector.PlaneResult scan = scanAt(grid, 'S', 24, 12);
+        assertFalse(scan.closed());
+    }
+
+    @Test
+    void closedTwoByThreeNextToCaveUsesTheDoor() {
+        String[] grid = {
+                "#####################",
+                "######..............#",
+                "#..###..............#",
+                "#..S##..............#",
+                "#..###..............#",
+                "######..............#",
+                "#####################"
+        };
+        FrameDetector.PlaneResult scan = scanAt(grid, 'S', 24, 12);
+        assertTrue(scan.closed());
+        assertEquals(6, scan.interior().size());
+        assertTrue(covers(scan, 1, 2, 2, 3));
+    }
+
+    @Test
+    void interiorWiderThanLimitIsRejected() {
+        int innerW = 35;
+        int innerH = 6;
+        int w = innerW + 2;
+        int h = innerH + 2;
+        String[] rows = new String[h];
+        rows[0] = "#".repeat(w);
+        rows[h - 1] = "#".repeat(w);
+        for (int y = 1; y < h - 1; y++) {
+            char[] line = new char[w];
+            java.util.Arrays.fill(line, '.');
+            line[0] = '#';
+            line[w - 1] = '#';
+            if (y == 2) {
+                line[w - 1] = 'S';
+            }
+            rows[y] = new String(line);
+        }
+        int[] s = find(rows, 'S');
+        FrameDetector.PlaneResult scan = scanAt(rows, s[0], s[1], 40, 12);
+        assertFalse(scan.closed());
+    }
+
+    @Test
+    void interiorWithinLimitStaysClosed() {
+        int innerW = 10;
+        int innerH = 8;
+        int w = innerW + 2;
+        int h = innerH + 2;
+        String[] rows = new String[h];
+        rows[0] = "#".repeat(w);
+        rows[h - 1] = "#".repeat(w);
+        for (int y = 1; y < h - 1; y++) {
+            char[] line = new char[w];
+            java.util.Arrays.fill(line, '.');
+            line[0] = '#';
+            line[w - 1] = '#';
+            if (y == 2) {
+                line[w - 1] = 'S';
+            }
+            rows[y] = new String(line);
+        }
+        int[] s = find(rows, 'S');
+        FrameDetector.PlaneResult scan = scanAt(rows, s[0], s[1], 24, 30);
+        assertTrue(scan.closed());
+        assertEquals(innerW * innerH, scan.interior().size());
+    }
+
+    @Test
+    void filledRectBiggerThanRadiusSquaredStillClosed() {
+        int innerW = 25;
+        int innerH = 24;
+        int w = innerW + 2;
+        int h = innerH + 2;
+        String[] rows = new String[h];
+        rows[0] = "#".repeat(w);
+        rows[h - 1] = "#".repeat(w);
+        for (int y = 1; y < h - 1; y++) {
+            char[] line = new char[w];
+            java.util.Arrays.fill(line, '.');
+            line[0] = '#';
+            line[w - 1] = '#';
+            if (y == 2) {
+                line[w - 1] = 'S';
+            }
+            rows[y] = new String(line);
+        }
+        int[] s = find(rows, 'S');
+        int height = rows.length;
+        int width = rows[0].length();
+        FrameDetector.CellFn passable = (x, y, z) -> z == 0 && (!in(width, height, x, y) || cell(rows, x, y) == '.');
+        FrameDetector.CellFn solid = (x, y, z) -> z == 0 && in(width, height, x, y)
+                && (cell(rows, x, y) == '#' || cell(rows, x, y) == 'S');
+        FrameDetector.PlaneResult scan = FrameDetector.scanPlane(
+                s[0], s[1], 0, s[0], s[1], 0, 32, Axis.X, passable, solid);
+        assertTrue(scan.closed());
+        assertEquals(innerW * innerH, scan.interior().size());
+    }
+
     private static FrameDetector.PlaneResult scanAt(String[] rows, char mark) {
         int[] s = find(rows, mark);
         return scanAt(rows, s[0], s[1]);
     }
 
+    private static FrameDetector.PlaneResult scanAt(String[] rows, char mark, int maxRadius, int maxInterior) {
+        int[] s = find(rows, mark);
+        return scanAt(rows, s[0], s[1], maxRadius, maxInterior);
+    }
+
     private static FrameDetector.PlaneResult scanAt(String[] rows, int sx, int sy) {
+        return scanAt(rows, sx, sy, 24, Integer.MAX_VALUE);
+    }
+
+    private static FrameDetector.PlaneResult scanAt(String[] rows, int sx, int sy, int maxRadius, int maxInterior) {
         int h = rows.length;
         int w = rows[0].length();
         FrameDetector.CellFn passable = (x, y, z) -> z == 0 && (!in(w, h, x, y) || cell(rows, x, y) == '.');
         FrameDetector.CellFn solid = (x, y, z) -> z == 0 && in(w, h, x, y)
                 && (cell(rows, x, y) == '#' || cell(rows, x, y) == 'S');
-        return FrameDetector.scanPlane(sx, sy, 0, sx, sy, 0, 24, Axis.X, passable, solid);
+        return FrameDetector.scanPlane(sx, sy, 0, sx, sy, 0, maxRadius, maxInterior, Axis.X, passable, solid);
     }
 
     private static boolean covers(FrameDetector.PlaneResult scan, int x, int y, int w, int h) {

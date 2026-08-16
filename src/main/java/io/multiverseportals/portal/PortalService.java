@@ -67,6 +67,7 @@ public final class PortalService {
         }
         for (Portal portal : db.listPortals()) {
             plugin.portalMatter().tickParticles(portal);
+            plugin.portalMatter().ensureSheet(portal);
         }
     }
 
@@ -248,6 +249,9 @@ public final class PortalService {
                 plugin.portalMatter().refresh(portal);
             }
         }
+        if (plugin.portalMatter() != null && !plugin.portalMatter().hasSheet(portal.id())) {
+            plugin.portalMatter().ensureSheet(portal);
+        }
     }
 
     public void checkFrameNow(Portal portal) {
@@ -361,7 +365,7 @@ public final class PortalService {
             return FrameDetector.Scan.open();
         }
         Block sign = world.getBlockAt(portal.frame().x(), portal.frame().y(), portal.frame().z());
-        FrameDetector.Scan scan = FrameDetector.scan(sign, config.maxFrameRadius());
+        FrameDetector.Scan scan = FrameDetector.scan(sign, config.maxFrameRadius(), config.maxInterior());
         scanCache.put(portal.id(), scan);
         return scan;
     }

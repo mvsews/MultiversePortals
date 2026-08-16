@@ -82,6 +82,7 @@ public final class MultiversePortalsPlugin extends JavaPlugin {
         var messages = new io.multiverseportals.i18n.Messages(this);
         messages.load(pluginConfig.language(), pluginConfig.languagePerPlayer());
         this.pluginConfig.setMessages(messages);
+        this.pluginConfig.clearStaleEffectsCopy();
 
         String guessedHost = guessPublicHost();
         if (pluginConfig.ensureBootstrapDefaults(guessedHost)) {

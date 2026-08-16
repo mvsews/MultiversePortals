@@ -2,6 +2,39 @@
 
 All notable changes to Multiverse Portals are listed here.
 
+## 1.2.24 — 2026-08-16
+
+- A closed **1×2** peephole on the sign is a portal. Vanilla still pops a sheet that small, so the purple fill uses BlockDisplay. A real 2×3 on the same jamb still wins over the peephole. Caves stay rejected.
+
+## 1.2.23 — 2026-08-16
+
+- Fill the **2×3 doorway on the sign**, not a Nether cave behind the jamb. A hole larger than `portals.max-interior` (default **12**) is not a portal. Refresh no longer paints a guessed hole or wipes neighbouring nether-portal sheets.
+
+## 1.2.22 — 2026-08-16
+
+- Charge HUD follows the player's client language. Old `effects.subtitle` «Не сходи с плиты» / "stay on the plate" in `config.yml` no longer overrides lang files for everyone.
+- Docker `mvsews/mvp` (and the hub prestart hook) refresh **Geyser, Floodgate, ViaVersion, ViaBackwards, ViaRewind** on every container start, plus MultiversePortals when `version.json` is newer.
+
+## 1.2.21 — 2026-08-16
+
+- Configurable opening size: `portals.max-interior` (default **30**) is the longest side of the air hole. A 2×3 door is fine; a Nether cave behind the jamb is not filled. `portals.max-frame-radius` is still how far the scan may walk from the sign.
+
+## 1.2.20 — 2026-08-16
+
+- Admin/RCON map peek: `/mvp inspect` (aliases `blocks`, `map`). List portals, or dump a slice around an id / `here` / `world x y z [r]`: FrameDetector, neighbors, ASCII plane, block counts. Same text goes to the server log (`[inspect]`).
+
+## 1.2.19 — 2026-08-16
+
+- Small doorway next to a Nether cave no longer steals the cave as a giant frame. The scan keeps the smallest real opening on this sign (2×3), not the hole behind the jamb.
+- Real giant rings still light; sheets bigger than vanilla 21×21 use **BlockDisplay** so vanilla cannot pop them.
+- Matter paints when the sign's chunk loads.
+- Transfer settle window 120s: bounce home without a dest portal counts as refuse; dest with an MVP portal is scored from the registry hop, not from a walk-back.
+
+## 1.2.18 — 2026-08-16
+
+- SQLite hop writes no longer deadlock the main thread (Paper watchdog after a return hop).
+- `portals.max-frame-radius` default 64 (cap 96).
+
 ## 1.2.17 — 2026-08-16
 
 - Local **wool** portals accept any closed ring of one color (not only 3×4). A small 3×4 doorway is just an example. Hang the sign on the **right jamb**, same as cross-server portals. Site and guides updated.

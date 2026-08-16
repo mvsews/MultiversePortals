@@ -44,7 +44,9 @@ public final class Database {
         // Single writer + WAL: avoids SQLITE_BUSY storms from scanners vs bind/FX
         hc.setJdbcUrl(jdbcUrl);
         hc.setMaximumPoolSize(1);
-        hc.setConnectionTimeout(30_000);
+        // Keep this under Paper's watchdog (~20s). Nested getConnection() on this pool
+        // deadlocks until timeout — a 30s wait froze the server on portal return.
+        hc.setConnectionTimeout(5_000);
         hc.setPoolName("MVP-SQLite-write");
         hc.setConnectionInitSql("PRAGMA busy_timeout=30000; PRAGMA foreign_keys=ON;");
         this.ds = new HikariDataSource(hc);
@@ -392,10 +394,12 @@ public final class Database {
             ps.setInt(9, dRej);
             ps.setLong(10, now);
             ps.executeUpdate();
-            insertHopEvent(kind, sid, h, p, playerUuid, playerName, now);
         } catch (SQLException e) {
             plugin.getLogger().warning("peer_reputation: " + e.getMessage());
+            return;
         }
+        // Must not nest connection() — write pool size is 1, so a second borrow waits forever.
+        insertHopEvent(kind, sid, h, p, playerUuid, playerName, now);
     }
 
     private void insertHopEvent(

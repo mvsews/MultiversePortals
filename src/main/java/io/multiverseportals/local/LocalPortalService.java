@@ -77,6 +77,10 @@ public final class LocalPortalService {
         return config.maxFrameRadius();
     }
 
+    private int interior() {
+        return config.maxInterior();
+    }
+
     public Optional<LocalPortal> findBySign(Location loc) {
         if (loc == null || loc.getWorld() == null) {
             return Optional.empty();
@@ -101,10 +105,10 @@ public final class LocalPortalService {
             }
             World w = loc.getWorld();
             Block sign = w.getBlockAt(p.x(), p.y(), p.z());
-            if (WoolFrame.standingInOpening(loc, sign, radius())) {
+            if (WoolFrame.standingInOpening(loc, sign, radius(), interior())) {
                 return Optional.of(p);
             }
-            Location warp = WoolFrame.warpLocation(sign, radius());
+            Location warp = WoolFrame.warpLocation(sign, radius(), interior());
             if (loc.distanceSquared(warp) <= 1.21) {
                 return Optional.of(p);
             }
@@ -146,7 +150,7 @@ public final class LocalPortalService {
                 continue;
             }
             Block sign = origin.getWorld().getBlockAt(p.x(), p.y(), p.z());
-            if (WoolFrame.containsBlock(sign, origin, r)) {
+            if (WoolFrame.containsBlock(sign, origin, r, interior())) {
                 return Optional.of(p);
             }
         }
@@ -171,7 +175,7 @@ public final class LocalPortalService {
         if (!(signBlock.getBlockData() instanceof WallSign)) {
             return CreateResult.fail(config.message(player, "local-need-wallsign"));
         }
-        if (!WoolFrame.frameIsComplete(signBlock, radius())) {
+        if (!WoolFrame.frameIsComplete(signBlock, radius(), interior())) {
             return CreateResult.fail(config.message(player, "local-frame-incomplete"));
         }
         DyeColor color = WoolFrame.colorOfFrame(signBlock).orElse(null);
@@ -338,8 +342,8 @@ public final class LocalPortalService {
         }
         Block fromSign = fromWorld.getBlockAt(from.x(), from.y(), from.z());
         Block toSign = toWorld.getBlockAt(to.x(), to.y(), to.z());
-        Location warpFrom = WoolFrame.warpLocation(fromSign, radius());
-        Location warpTo = WoolFrame.warpLocation(toSign, radius());
+        Location warpFrom = WoolFrame.warpLocation(fromSign, radius(), interior());
+        Location warpTo = WoolFrame.warpLocation(toSign, radius(), interior());
 
         for (Entity e : fromWorld.getNearbyEntities(warpFrom, 0.85, 1.6, 0.85)) {
             teleportEntity(e, from, to, toSign, false);
@@ -368,14 +372,14 @@ public final class LocalPortalService {
         teleportEntity(cart, from, to, toSign, true);
         Bukkit.getScheduler().runTaskLater(plugin, () -> {
             if (cart.isValid()) {
-                Vector direction = WoolFrame.warpLocation(toSign, radius()).getDirection().clone().multiply(velocityLength);
+                Vector direction = WoolFrame.warpLocation(toSign, radius(), interior()).getDirection().clone().multiply(velocityLength);
                 cart.setVelocity(direction);
             }
         }, 2L);
         Bukkit.getScheduler().runTaskLater(plugin, () -> {
             for (Entity p : passengers) {
                 if (p.isValid()) {
-                    p.teleport(WoolFrame.arrivalLocation(toSign, radius()));
+                    p.teleport(WoolFrame.arrivalLocation(toSign, radius(), interior()));
                     cart.addPassenger(p);
                 }
             }
@@ -387,7 +391,7 @@ public final class LocalPortalService {
             return false;
         }
         markNoTeleport(entity);
-        Location dest = cart ? WoolFrame.cartWarpLocation(toSign, radius()) : WoolFrame.arrivalLocation(toSign, radius());
+        Location dest = cart ? WoolFrame.cartWarpLocation(toSign, radius(), interior()) : WoolFrame.arrivalLocation(toSign, radius(), interior());
         entity.teleport(dest);
         return true;
     }
@@ -448,10 +452,10 @@ public final class LocalPortalService {
         Block toSign = toWorld.getBlockAt(toOpt.get().x(), toOpt.get().y(), toOpt.get().z());
         if (teleportEntity(entity, from, toOpt.get(), toSign, false)) {
             Block fromSign = fromWorld.getBlockAt(from.x(), from.y(), from.z());
-            Location warpFrom = WoolFrame.warpLocation(fromSign, radius());
+            Location warpFrom = WoolFrame.warpLocation(fromSign, radius(), interior());
             Bukkit.getScheduler().runTaskLater(plugin, () ->
                     fromWorld.playSound(warpFrom, Sound.ENTITY_ENDERMAN_TELEPORT, 1.0F, 0.5F), 2L);
-            toWorld.playSound(WoolFrame.arrivalLocation(toSign, radius()), Sound.ENTITY_ENDERMAN_TELEPORT, 1.0F, 0.5F);
+            toWorld.playSound(WoolFrame.arrivalLocation(toSign, radius(), interior()), Sound.ENTITY_ENDERMAN_TELEPORT, 1.0F, 0.5F);
         }
     }
 
@@ -472,15 +476,15 @@ public final class LocalPortalService {
         }
         Block sign = world.getBlockAt(portal.x(), portal.y(), portal.z());
         int r = radius();
-        if (!WoolFrame.frameIsComplete(sign, r)) {
+        if (!WoolFrame.frameIsComplete(sign, r, interior())) {
             matter.remove(portal.id());
             return;
         }
         List<Location> cells = new ArrayList<>();
-        for (Block b : WoolFrame.interiorBlocks(sign, r)) {
+        for (Block b : WoolFrame.interiorBlocks(sign, r, interior())) {
             cells.add(b.getLocation());
         }
-        matter.fillOpening(portal.id(), world, cells, WoolFrame.sheetAxis(sign, r));
+        matter.fillOpening(portal.id(), world, cells, WoolFrame.sheetAxis(sign, r, interior()));
     }
 
     public void printInfo(Player player, LocalPortal portal) {

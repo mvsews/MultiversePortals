@@ -23,6 +23,11 @@ import java.util.Set;
  */
 public final class FrameDetector {
 
+    /** Flood-fill / full doorway: vanilla 2×3. A closed 1×2 peephole is accepted separately. */
+    static final int MIN_INTERIOR = 6;
+    /** Smallest walkable hole: 1 wide × 2 tall. */
+    static final int MIN_RECT_CELLS = 2;
+
     public record Scan(
             boolean closed,
             Axis axis,
@@ -87,10 +92,18 @@ public final class FrameDetector {
     private FrameDetector() {}
 
     public static Scan scan(Block sign, int maxRadius) {
+        return scan(sign, maxRadius, Integer.MAX_VALUE);
+    }
+
+    /**
+     * @param maxInterior max width or height of a valid opening (air), in blocks
+     */
+    public static Scan scan(Block sign, int maxRadius, int maxInterior) {
         if (sign == null || maxRadius < 2) {
             return Scan.open();
         }
-        int r = Math.max(2, Math.min(48, maxRadius));
+        int r = Math.max(2, Math.min(96, maxRadius));
+        int cap = maxInterior <= 0 ? Integer.MAX_VALUE : maxInterior;
         BlockFace facing = facingOf(sign);
         BlockFace into = facing.getOppositeFace();
         Block key = sign.getRelative(into);
@@ -101,29 +114,28 @@ public final class FrameDetector {
             return toScan(world, scanPlane(
                     sign.getX(), sign.getY(), sign.getZ(),
                     key.getX(), key.getY(), key.getZ(),
-                    r, Axis.Z, passable, solid), Axis.Z);
+                    r, cap, Axis.Z, passable, solid), Axis.Z);
         }
         if (facing == BlockFace.NORTH || facing == BlockFace.SOUTH) {
             return toScan(world, scanPlane(
                     sign.getX(), sign.getY(), sign.getZ(),
                     key.getX(), key.getY(), key.getZ(),
-                    r, Axis.X, passable, solid), Axis.X);
+                    r, cap, Axis.X, passable, solid), Axis.X);
         }
         PlaneResult a = scanPlane(
                 sign.getX(), sign.getY(), sign.getZ(),
                 key.getX(), key.getY(), key.getZ(),
-                r, Axis.X, passable, solid);
+                r, cap, Axis.X, passable, solid);
         PlaneResult b = scanPlane(
                 sign.getX(), sign.getY(), sign.getZ(),
                 key.getX(), key.getY(), key.getZ(),
-                r, Axis.Z, passable, solid);
+                r, cap, Axis.Z, passable, solid);
         if (a.closed() && !b.closed()) {
             return toScan(world, a, Axis.X);
         }
         if (b.closed() && !a.closed()) {
             return toScan(world, b, Axis.Z);
         }
-        // Unknown facing: the hole is the smaller closed region (not the room behind a 1-thick wall).
         PlaneResult pick = a.interior().size() <= b.interior().size() ? a : b;
         Axis axis = pick == a ? Axis.X : Axis.Z;
         return toScan(world, pick, axis);
@@ -131,8 +143,9 @@ public final class FrameDetector {
 
     /**
      * Flood-fill in one wall plane. When several closed holes sit next to the sign
-     * (shared pillar), pick the largest hole that still belongs to this sign —
-     * not a neighbour, and not a 1-block decorative gap.
+     * (shared pillar / cave behind the jamb), pick the <em>smallest</em> real doorway
+     * (≥ {@link #MIN_INTERIOR}) that still belongs to this sign — not a Nether cave
+     * to the side, and not a 1-block decorative gap.
      */
     static PlaneResult scanPlane(
             int sx, int sy, int sz,
@@ -142,7 +155,23 @@ public final class FrameDetector {
             CellFn passable,
             CellFn solid
     ) {
+        return scanPlane(sx, sy, sz, kx, ky, kz, maxRadius, Integer.MAX_VALUE, axis, passable, solid);
+    }
+
+    static PlaneResult scanPlane(
+            int sx, int sy, int sz,
+            int kx, int ky, int kz,
+            int maxRadius,
+            int maxInterior,
+            Axis axis,
+            CellFn passable,
+            CellFn solid
+    ) {
         int[][] dirs = inPlaneDeltas(axis);
+        PlaneResult doorway = findAttachedRectangle(sx, sy, sz, kx, ky, kz, axis, passable, solid);
+        if (doorway.closed() && interiorSpan(doorway.interior()) <= maxInterior) {
+            return doorway;
+        }
         List<Coord> seeds = findInteriorSeeds(sx, sy, sz, kx, ky, kz, maxRadius, axis, passable);
         if (seeds.isEmpty()) {
             return PlaneResult.open();
@@ -180,10 +209,19 @@ public final class FrameDetector {
         if (local.isEmpty()) {
             local = candidates;
         }
-        PlaneResult best = local.get(0);
+        List<PlaneResult> doorways = new ArrayList<>();
+        for (PlaneResult c : local) {
+            if (c.interior().size() >= MIN_INTERIOR && interiorSpan(c.interior()) <= maxInterior) {
+                doorways.add(c);
+            }
+        }
+        if (doorways.isEmpty()) {
+            return PlaneResult.open();
+        }
+        PlaneResult best = doorways.get(0);
         double bestScore = componentScore(best, sx, sy, sz);
-        for (int i = 1; i < local.size(); i++) {
-            PlaneResult c = local.get(i);
+        for (int i = 1; i < doorways.size(); i++) {
+            PlaneResult c = doorways.get(i);
             double score = componentScore(c, sx, sy, sz);
             if (score < bestScore) {
                 bestScore = score;
@@ -193,10 +231,35 @@ public final class FrameDetector {
         return best;
     }
 
-    /** Larger hole first (portal over a peephole); equal size → closer to this sign. */
+    /**
+     * Smallest real doorway first (2×3 over a Nether cave on the other side of the
+     * jamb). Equal size → closer to this sign.
+     */
     private static double componentScore(PlaneResult scan, int sx, int sy, int sz) {
         double dist = centroidDistSq(scan, sx, sy, sz);
-        return -scan.interior().size() * 1_000_000.0 + dist;
+        return scan.interior().size() * 1_000_000.0 + dist;
+    }
+
+    /** Longest side of the opening bounding box (width or height). */
+    static int interiorSpan(List<Coord> interior) {
+        if (interior == null || interior.isEmpty()) {
+            return 0;
+        }
+        int minX = Integer.MAX_VALUE, maxX = Integer.MIN_VALUE;
+        int minY = Integer.MAX_VALUE, maxY = Integer.MIN_VALUE;
+        int minZ = Integer.MAX_VALUE, maxZ = Integer.MIN_VALUE;
+        for (Coord c : interior) {
+            minX = Math.min(minX, c.x());
+            maxX = Math.max(maxX, c.x());
+            minY = Math.min(minY, c.y());
+            maxY = Math.max(maxY, c.y());
+            minZ = Math.min(minZ, c.z());
+            maxZ = Math.max(maxZ, c.z());
+        }
+        int dx = maxX - minX + 1;
+        int dy = maxY - minY + 1;
+        int dz = maxZ - minZ + 1;
+        return Math.max(dx, Math.max(dy, dz));
     }
 
     private static boolean attachedBelowSign(PlaneResult scan, int sx, int sy, int sz, int maxRadius) {
@@ -229,6 +292,128 @@ public final class FrameDetector {
         y = y / n - sy;
         z = z / n - sz;
         return x * x + y * y + z * z;
+    }
+
+    /**
+     * Closed 1–4 × 2–5 air rectangle glued to the sign's key block (1×2 peephole
+     * up to a small door). A Nether cave that leaks through a gap is not this doorway.
+     */
+    static PlaneResult findAttachedRectangle(
+            int sx, int sy, int sz,
+            int kx, int ky, int kz,
+            Axis axis,
+            CellFn passable,
+            CellFn solid
+    ) {
+        int[][] dirs = inPlaneDeltas(axis);
+        List<PlaneResult> found = new ArrayList<>();
+        for (int[] d : dirs) {
+            int nx = kx + d[0];
+            int ny = ky + d[1];
+            int nz = kz + d[2];
+            if (!passable.test(nx, ny, nz)) {
+                continue;
+            }
+            int seedH = axis == Axis.X ? nx : nz;
+            int seedV = ny;
+            for (int w = 1; w <= 4; w++) {
+                for (int ht = 2; ht <= 5; ht++) {
+                    if (w * ht < MIN_RECT_CELLS) {
+                        continue;
+                    }
+                    for (int h0 = seedH - w + 1; h0 <= seedH; h0++) {
+                        for (int v0 = seedV - ht + 1; v0 <= seedV; v0++) {
+                            PlaneResult rect = tryRectangle(
+                                    sx, sy, sz, kx, ky, kz,
+                                    h0, v0, w, ht, axis, passable, solid);
+                            if (rect.closed()) {
+                                found.add(rect);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (found.isEmpty()) {
+            return PlaneResult.open();
+        }
+        // Largest closed rect on this jamb (full 2×3, not a 1×2 subset). Equal size → closer.
+        PlaneResult best = found.get(0);
+        int bestSize = best.interior().size();
+        double bestDist = centroidDistSq(best, sx, sy, sz);
+        for (int i = 1; i < found.size(); i++) {
+            PlaneResult c = found.get(i);
+            int n = c.interior().size();
+            double dist = centroidDistSq(c, sx, sy, sz);
+            if (n > bestSize || (n == bestSize && dist < bestDist)) {
+                best = c;
+                bestSize = n;
+                bestDist = dist;
+            }
+        }
+        return best;
+    }
+
+    private static PlaneResult tryRectangle(
+            int sx, int sy, int sz,
+            int kx, int ky, int kz,
+            int h0, int v0, int w, int ht,
+            Axis axis,
+            CellFn passable,
+            CellFn solid
+    ) {
+        List<Coord> interior = new ArrayList<>(w * ht);
+        Set<Long> in = new HashSet<>();
+        for (int dh = 0; dh < w; dh++) {
+            for (int dv = 0; dv < ht; dv++) {
+                Coord c = planeCell(axis, kx, kz, h0 + dh, v0 + dv);
+                if (!passable.test(c.x(), c.y(), c.z())) {
+                    return PlaneResult.open();
+                }
+                interior.add(c);
+                in.add(pack(c.x(), c.y(), c.z()));
+            }
+        }
+        boolean touchKey = false;
+        Set<Long> frameKeys = new HashSet<>();
+        List<Coord> frame = new ArrayList<>();
+        int[][] dirs = inPlaneDeltas(axis);
+        for (Coord cell : interior) {
+            for (int[] d : dirs) {
+                int nx = cell.x() + d[0];
+                int ny = cell.y() + d[1];
+                int nz = cell.z() + d[2];
+                if (in.contains(pack(nx, ny, nz))) {
+                    continue;
+                }
+                boolean atKey = nx == kx && ny == ky && nz == kz;
+                boolean atSign = nx == sx && ny == sy && nz == sz;
+                if (atKey) {
+                    touchKey = true;
+                }
+                if (atSign && !atKey) {
+                    continue;
+                }
+                if (!atKey && !solid.test(nx, ny, nz)) {
+                    return PlaneResult.open();
+                }
+                long pk = pack(nx, ny, nz);
+                if (frameKeys.add(pk)) {
+                    frame.add(new Coord(nx, ny, nz));
+                }
+            }
+        }
+        if (!touchKey || interior.size() < MIN_RECT_CELLS || frame.size() < 6) {
+            return PlaneResult.open();
+        }
+        return new PlaneResult(true, List.copyOf(interior), List.copyOf(frame));
+    }
+
+    private static Coord planeCell(Axis axis, int kx, int kz, int horiz, int vert) {
+        if (axis == Axis.X) {
+            return new Coord(horiz, vert, kz);
+        }
+        return new Coord(kx, vert, horiz);
     }
 
     static List<Coord> findInteriorSeeds(
@@ -320,7 +505,7 @@ public final class FrameDetector {
                 break;
             }
             interior.add(cur);
-            if (interior.size() > maxRadius * maxRadius) {
+            if (interior.size() > (2L * maxRadius + 1) * (2L * maxRadius + 1)) {
                 leaked = true;
                 break;
             }

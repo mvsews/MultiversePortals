@@ -3,7 +3,7 @@ plugins {
 }
 
 group = "io.multiverseportals"
-version = "1.2.17"
+version = "1.2.24"
 
 java {
     toolchain {

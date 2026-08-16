@@ -180,7 +180,7 @@ public final class PortalEffects {
         String label = displayDest(dest);
         player.showTitle(Title.title(
                 mm.deserialize(""),
-                mm.deserialize(config.effectsSubtitle().replace("%dest%", escapeMm(label))),
+                mm.deserialize(config.effectsSubtitle(player).replace("%dest%", escapeMm(label))),
                 Title.Times.times(
                         Duration.ofMillis(80),
                         Duration.ofMillis(Math.max(40, holdTicks) * 50L),

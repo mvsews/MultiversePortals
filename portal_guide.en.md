@@ -40,7 +40,7 @@ If line 2 is `Random`, it is a **cross-server** portal even on oak. Away is **no
 
 ### Build a portal
 
-1. Frame like a Nether portal — **2×3** opening (air), any solid blocks around. A **giant closed circle** also works: while the ring is closed the opening shows the vanilla Nether portal sheet; open a gap and the matter vanishes.
+1. Frame like a Nether portal — opening from a **1×2** peephole up to a giant ring (vanilla **2×3** is typical), any solid blocks around. While the ring is closed the hole lights purple; open a gap and the matter vanishes.
 
 ```
 O O O O

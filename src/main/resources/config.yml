@@ -161,6 +161,8 @@ scanner:
   # Bedrock pong must match this many times before bind
   bind-confirm-probes: 2
   confirm-before-transfer: true
+  # No portal on dest: player back within this window = dest refused; stayed away = +1 reputation.
+  # Dest has a portal: accept/refuse comes from dest ARRIVED/REJECTED (return walk is not a bounce).
   bounce-back-seconds: 120
   bedrock-ports: [19132, 19133]
   # Remember probe results in SQLite (skip dead, fallback to verified)
@@ -257,11 +259,14 @@ update:
   # Paper installs it on the next restart. /mvp update still works for a manual pull.
   auto-download: true
 
-# Frame / opening detection (giant closed circles allowed)
+# Frame / opening detection
 portals:
   # Chebyshev radius from the sign. Opening must not leak past this.
-  # Multi, Away, and wool rings share this limit.
-  max-frame-radius: 24
+  # Multi, Away, and wool rings share this limit. Cap in code is 96.
+  max-frame-radius: 64
+  # Longest side of the air opening (width or height), in blocks.
+  # Longest side of a valid hole. 1×2 peephole and vanilla 2×3 are both ok; a Nether cave is not.
+  max-interior: 12
   # Who may build portals (signs + wool): everyone | admin
   # everyone = all players; admin = OP / multiverseportals.admin
   # Toggle: /mvp settings create everyone|admin
@@ -292,7 +297,8 @@ away:
   # Cross-server [Multi]/[Pair]/[To] still only move players (vanilla Transfer).
   mobs: true
 
-# Portal visuals (leave title/subtitle empty to use lang files)
+# Portal visuals. Leave title/subtitle empty to use lang/*.yml (player locale).
+# Old "stay on the plate" / «Не сходи с плиты» values are ignored and cleared on boot.
 effects:
   enabled: true
   # Warmup while standing in the portal (20 ticks = 1s). Default ~5s.
