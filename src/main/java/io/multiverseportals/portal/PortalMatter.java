@@ -638,8 +638,9 @@ public final class PortalMatter implements Listener {
     }
 
     /**
-     * Vanilla nether-portal blocks only keep a filled rectangle: interior 2–21 wide,
-     * 3–21 high, 1 thick. Circles and anything larger use BlockDisplay.
+     * Real nether-portal blocks for a 1-thick filled rectangle (1–21 wide, 2–21 high).
+     * Vanilla would pop anything outside 2×3–21×21; {@link #onPhysics} keeps ours.
+     * Circles and anything larger still use BlockDisplay.
      */
     static boolean fitsVanillaNetherSheet(List<Location> cells) {
         if (cells == null || cells.isEmpty()) {
@@ -661,7 +662,7 @@ public final class PortalMatter implements Listener {
         int dz = maxZ - minZ + 1;
         int thick = Math.min(dx, dz);
         int width = Math.max(dx, dz);
-        if (thick != 1 || width < 2 || width > 21 || dy < 3 || dy > 21) {
+        if (thick != 1 || width < 1 || width > 21 || dy < 2 || dy > 21) {
             return false;
         }
         return cells.size() == (long) width * dy;

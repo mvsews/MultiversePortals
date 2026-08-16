@@ -2,6 +2,10 @@
 
 All notable changes to Multiverse Portals are listed here.
 
+## 1.2.25 — 2026-08-17
+
+- A **1×2** peephole uses real nether-portal blocks (Bedrock/Geyser cannot see BlockDisplay). Physics cancel still stops vanilla from popping the tiny sheet.
+
 ## 1.2.24 — 2026-08-17
 
 - A closed **1×2** peephole on the sign is a portal. Vanilla still pops a sheet that small, so the purple fill uses BlockDisplay. A real 2×3 on the same jamb still wins over the peephole. Caves stay rejected.

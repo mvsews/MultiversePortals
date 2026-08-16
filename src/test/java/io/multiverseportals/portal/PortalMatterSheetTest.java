@@ -12,8 +12,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class PortalMatterSheetTest {
 
     @Test
-    void oneByTwoPeepholeUsesDisplays() {
-        assertFalse(PortalMatter.fitsVanillaNetherSheet(rect(1, 2)));
+    void oneByTwoPeepholeUsesRealBlocks() {
+        assertTrue(PortalMatter.fitsVanillaNetherSheet(rect(1, 2)));
+    }
+
+    @Test
+    void oneByOneIsNotASheet() {
+        assertFalse(PortalMatter.fitsVanillaNetherSheet(rect(1, 1)));
     }
 
     @Test
