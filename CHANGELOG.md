@@ -2,9 +2,10 @@
 
 All notable changes to Multiverse Portals are listed here.
 
-## 1.2.24 — 2026-08-16
+## 1.2.24 — 2026-08-17
 
 - A closed **1×2** peephole on the sign is a portal. Vanilla still pops a sheet that small, so the purple fill uses BlockDisplay. A real 2×3 on the same jamb still wins over the peephole. Caves stay rejected.
+- Site and portal guides (EN / RU / ZH): a 1×2 hole is enough; vanilla **2×3** is the usual size.
 
 ## 1.2.23 — 2026-08-16
 
