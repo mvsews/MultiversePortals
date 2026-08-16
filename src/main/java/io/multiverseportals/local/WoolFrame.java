@@ -1,6 +1,9 @@
 package io.multiverseportals.local;
 
+import io.multiverseportals.portal.FrameDetector;
+import org.bukkit.Axis;
 import org.bukkit.DyeColor;
+import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.Tag;
 import org.bukkit.block.Block;
@@ -12,8 +15,13 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 
-/** ColorPortals-compatible wool frame (3×4 outline, wall-sign on top mid). */
+/**
+ * Local wool portal: any closed ring of one wool color (same detector as network portals).
+ * Sign hangs on the right jamb when looking at the portal.
+ */
 public final class WoolFrame {
+
+    public static final int DEFAULT_RADIUS = 24;
 
     private WoolFrame() {}
 
@@ -35,16 +43,31 @@ public final class WoolFrame {
         return null;
     }
 
-    public static boolean frameIsComplete(Block signBlock) {
-        if (!(signBlock.getBlockData() instanceof WallSign sign)) {
-            return false;
+    public static FrameDetector.Scan scan(Block signBlock) {
+        return scan(signBlock, DEFAULT_RADIUS);
+    }
+
+    public static FrameDetector.Scan scan(Block signBlock, int maxRadius) {
+        if (signBlock == null) {
+            return FrameDetector.Scan.open();
         }
-        Block keyBlock = signBlock.getRelative(sign.getFacing().getOppositeFace());
-        DyeColor color = woolColor(keyBlock);
+        return FrameDetector.scan(signBlock, maxRadius);
+    }
+
+    public static boolean frameIsComplete(Block signBlock) {
+        return frameIsComplete(signBlock, DEFAULT_RADIUS);
+    }
+
+    public static boolean frameIsComplete(Block signBlock, int maxRadius) {
+        DyeColor color = colorOfFrame(signBlock).orElse(null);
         if (color == null) {
             return false;
         }
-        for (Block b : frameBlocks(signBlock)) {
+        FrameDetector.Scan scanned = scan(signBlock, maxRadius);
+        if (!scanned.closed() || scanned.interior().isEmpty() || scanned.frameBlocks().size() < 6) {
+            return false;
+        }
+        for (Block b : scanned.frameBlocks()) {
             if (woolColor(b) != color) {
                 return false;
             }
@@ -60,83 +83,160 @@ public final class WoolFrame {
         return Optional.ofNullable(c);
     }
 
-    /** All 10 wool blocks of the frame (not sign / plate / button). */
     public static List<Block> frameBlocks(Block signBlock) {
-        List<Block> out = new ArrayList<>(10);
-        if (!(signBlock.getBlockData() instanceof WallSign sign)) {
-            return out;
-        }
-        Block keyBlock = signBlock.getRelative(sign.getFacing().getOppositeFace());
-        BlockFace travel = (sign.getFacing() == BlockFace.NORTH || sign.getFacing() == BlockFace.SOUTH)
-                ? BlockFace.EAST : BlockFace.NORTH;
-
-        Block topLeft = keyBlock.getRelative(travel);
-        Block topRight = keyBlock.getRelative(travel.getOppositeFace());
-        Block leftMid = topLeft.getRelative(BlockFace.DOWN);
-        Block rightMid = topRight.getRelative(BlockFace.DOWN);
-        Block lowerLeft = leftMid.getRelative(BlockFace.DOWN);
-        Block lowerRight = rightMid.getRelative(BlockFace.DOWN);
-        Block bottomLeft = lowerLeft.getRelative(BlockFace.DOWN);
-        Block bottomRight = lowerRight.getRelative(BlockFace.DOWN);
-        Block bottomMid = keyBlock.getRelative(BlockFace.DOWN).getRelative(BlockFace.DOWN).getRelative(BlockFace.DOWN);
-
-        out.add(keyBlock);
-        out.add(topLeft);
-        out.add(topRight);
-        out.add(leftMid);
-        out.add(rightMid);
-        out.add(lowerLeft);
-        out.add(lowerRight);
-        out.add(bottomLeft);
-        out.add(bottomRight);
-        out.add(bottomMid);
-        return out;
+        return frameBlocks(signBlock, DEFAULT_RADIUS);
     }
 
-    /** Sign + 10 wool + inner mid/upper/lower (occupied volume for break detection). */
+    public static List<Block> frameBlocks(Block signBlock, int maxRadius) {
+        return new ArrayList<>(scan(signBlock, maxRadius).frameBlocks());
+    }
+
     public static List<Block> occupiedBlocks(Block signBlock) {
-        List<Block> out = new ArrayList<>(14);
+        return occupiedBlocks(signBlock, DEFAULT_RADIUS);
+    }
+
+    public static List<Block> occupiedBlocks(Block signBlock, int maxRadius) {
+        List<Block> out = new ArrayList<>();
         out.add(signBlock);
-        if (!(signBlock.getBlockData() instanceof WallSign sign)) {
-            return out;
+        FrameDetector.Scan scanned = scan(signBlock, maxRadius);
+        out.addAll(scanned.frameBlocks());
+        for (Location loc : scanned.interior()) {
+            out.add(loc.getBlock());
         }
-        Block midTop = signBlock.getRelative(sign.getFacing().getOppositeFace());
-        Block midUpper = midTop.getRelative(BlockFace.DOWN);
-        Block midLower = midUpper.getRelative(BlockFace.DOWN);
-        Block midBottom = midLower.getRelative(BlockFace.DOWN);
-        BlockFace travel = (sign.getFacing() == BlockFace.NORTH || sign.getFacing() == BlockFace.SOUTH)
-                ? BlockFace.EAST : BlockFace.NORTH;
-        out.add(midTop);
-        out.add(midUpper);
-        out.add(midLower);
-        out.add(midBottom);
-        out.add(midTop.getRelative(travel));
-        out.add(midUpper.getRelative(travel));
-        out.add(midLower.getRelative(travel));
-        out.add(midBottom.getRelative(travel));
-        out.add(midTop.getRelative(travel.getOppositeFace()));
-        out.add(midUpper.getRelative(travel.getOppositeFace()));
-        out.add(midLower.getRelative(travel.getOppositeFace()));
-        out.add(midBottom.getRelative(travel.getOppositeFace()));
         return out;
     }
 
-    public static org.bukkit.Location warpLocation(Block signBlock) {
+    public static List<Block> interiorBlocks(Block signBlock) {
+        return interiorBlocks(signBlock, DEFAULT_RADIUS);
+    }
+
+    public static List<Block> interiorBlocks(Block signBlock, int maxRadius) {
+        List<Block> out = new ArrayList<>();
+        for (Location loc : scan(signBlock, maxRadius).interior()) {
+            out.add(loc.getBlock());
+        }
+        return out;
+    }
+
+    public static Axis sheetAxis(Block signBlock) {
+        return sheetAxis(signBlock, DEFAULT_RADIUS);
+    }
+
+    public static Axis sheetAxis(Block signBlock, int maxRadius) {
+        FrameDetector.Scan scanned = scan(signBlock, maxRadius);
+        if (scanned.closed()) {
+            return scanned.axis();
+        }
+        if (!(signBlock.getBlockData() instanceof WallSign sign)) {
+            return Axis.X;
+        }
+        BlockFace facing = sign.getFacing();
+        return (facing == BlockFace.NORTH || facing == BlockFace.SOUTH) ? Axis.X : Axis.Z;
+    }
+
+    public static boolean standingInOpening(Location loc, Block signBlock) {
+        return standingInOpening(loc, signBlock, DEFAULT_RADIUS);
+    }
+
+    public static boolean standingInOpening(Location loc, Block signBlock, int maxRadius) {
+        if (loc == null || loc.getWorld() == null || signBlock == null) {
+            return false;
+        }
+        if (!loc.getWorld().equals(signBlock.getWorld())) {
+            return false;
+        }
+        FrameDetector.Scan scanned = scan(signBlock, maxRadius);
+        int x = loc.getBlockX();
+        int y = loc.getBlockY();
+        int z = loc.getBlockZ();
+        return scanned.interiorContains(x, y, z) || scanned.interiorContains(x, y + 1, z);
+    }
+
+    public static boolean containsBlock(Block signBlock, Block target, int maxRadius) {
+        if (signBlock == null || target == null) {
+            return false;
+        }
+        if (!signBlock.getWorld().equals(target.getWorld())) {
+            return false;
+        }
+        if (signBlock.getX() == target.getX() && signBlock.getY() == target.getY() && signBlock.getZ() == target.getZ()) {
+            return true;
+        }
+        FrameDetector.Scan scanned = scan(signBlock, maxRadius);
+        int x = target.getX();
+        int y = target.getY();
+        int z = target.getZ();
+        return scanned.contains(x, y, z);
+    }
+
+    public static Location warpLocation(Block signBlock) {
+        return warpLocation(signBlock, DEFAULT_RADIUS);
+    }
+
+    public static Location warpLocation(Block signBlock, int maxRadius) {
         if (!(signBlock.getBlockData() instanceof WallSign sign)) {
             return signBlock.getLocation().add(0.5, 0, 0.5);
         }
-        org.bukkit.Location warp = signBlock
-                .getRelative(sign.getFacing().getOppositeFace())
-                .getRelative(BlockFace.DOWN)
-                .getRelative(BlockFace.DOWN)
-                .getLocation()
-                .add(0.5, 0, 0.5);
+        List<Location> interior = scan(signBlock, maxRadius).interior();
+        Location warp;
+        if (interior.isEmpty()) {
+            warp = signBlock
+                    .getRelative(sign.getFacing().getOppositeFace())
+                    .getRelative(BlockFace.DOWN)
+                    .getRelative(BlockFace.DOWN)
+                    .getLocation()
+                    .add(0.5, 0, 0.5);
+        } else {
+            int minY = Integer.MAX_VALUE;
+            for (Location loc : interior) {
+                minY = Math.min(minY, loc.getBlockY());
+            }
+            double x = 0;
+            double z = 0;
+            int n = 0;
+            for (Location loc : interior) {
+                if (loc.getBlockY() != minY) {
+                    continue;
+                }
+                x += loc.getBlockX();
+                z += loc.getBlockZ();
+                n++;
+            }
+            warp = new Location(signBlock.getWorld(), x / n + 0.5, minY, z / n + 0.5);
+        }
         warp.setYaw(faceToYaw(sign.getFacing()) + 180F);
         return warp;
     }
 
-    public static org.bukkit.Location cartWarpLocation(Block signBlock) {
-        org.bukkit.Location warp = warpLocation(signBlock).clone();
+    public static Location arrivalLocation(Block signBlock) {
+        return arrivalLocation(signBlock, DEFAULT_RADIUS);
+    }
+
+    public static Location arrivalLocation(Block signBlock, int maxRadius) {
+        if (!(signBlock.getBlockData() instanceof WallSign sign)) {
+            return signBlock.getLocation().add(0.5, -1.9, 0.5);
+        }
+        BlockFace face = sign.getFacing();
+        Location loc = warpLocation(signBlock, maxRadius).clone();
+        loc.add(face.getModX() * 1.5, 0, face.getModZ() * 1.5);
+        loc.setYaw(faceToYaw(face));
+        for (int i = 0; i < 4; i++) {
+            Material feet = loc.getBlock().getType();
+            Material head = loc.clone().add(0, 1, 0).getBlock().getType();
+            if (feet != Material.NETHER_PORTAL && head != Material.NETHER_PORTAL) {
+                break;
+            }
+            loc.add(face.getModX(), 0, face.getModZ());
+        }
+        return loc;
+    }
+
+    public static Location cartWarpLocation(Block signBlock) {
+        return cartWarpLocation(signBlock, DEFAULT_RADIUS);
+    }
+
+    public static Location cartWarpLocation(Block signBlock, int maxRadius) {
+        Location warp = warpLocation(signBlock, maxRadius).clone();
         if (!(signBlock.getBlockData() instanceof WallSign sign)) {
             return warp;
         }
@@ -162,12 +262,15 @@ public final class WoolFrame {
     }
 
     public static boolean looksLikeColorPortalSign(Block signBlock) {
+        return looksLikeColorPortalSign(signBlock, DEFAULT_RADIUS);
+    }
+
+    public static boolean looksLikeColorPortalSign(Block signBlock, int maxRadius) {
         if (!(signBlock.getBlockData() instanceof WallSign sign)) {
             return false;
         }
         Block key = signBlock.getRelative(sign.getFacing().getOppositeFace());
-        Block bottom = key.getRelative(BlockFace.DOWN).getRelative(BlockFace.DOWN).getRelative(BlockFace.DOWN);
-        return isWool(key.getType()) && isWool(bottom.getType());
+        return isWool(key.getType()) && frameIsComplete(signBlock, maxRadius);
     }
 
     public static String colorPermKey(DyeColor color) {

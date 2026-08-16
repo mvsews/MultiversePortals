@@ -53,6 +53,8 @@ public final class MultiversePortalsPlugin extends JavaPlugin {
     private io.multiverseportals.travel.IngressPolicy ingressPolicy;
     private LocalPortalService localPortalService;
     private LocalPortalListener localPortalListener;
+    private io.multiverseportals.listener.PortalListener portalListener;
+    private io.multiverseportals.away.BiomePortalService biomePortalService;
     private UpdateChecker updateChecker;
     /** True when server.properties was patched / already true but JVM needs restart. */
     private volatile boolean acceptTransfersRestartNeeded;
@@ -107,6 +109,7 @@ public final class MultiversePortalsPlugin extends JavaPlugin {
         } catch (Exception e) {
             getLogger().severe("Central MySQL registry unavailable: " + e.getMessage());
             getLogger().severe("Hub only: fix registry.jdbc-url — normal servers keep registry.enabled: false (HTTPS catalog).");
+            scheduleRegistryRetry(1);
         }
 
         this.consentService = new ConsentService(database);
@@ -137,6 +140,7 @@ public final class MultiversePortalsPlugin extends JavaPlugin {
         this.localPortalService = new LocalPortalService(this, database, pluginConfig);
         this.localPortalService.loadCache();
         this.localPortalListener = new LocalPortalListener(this, localPortalService, pluginConfig);
+        this.biomePortalService = new io.multiverseportals.away.BiomePortalService(this, database, pluginConfig);
         this.catalogShareService = new CatalogShareService(this, pluginConfig, database, registry, peerClient);
         this.updateChecker = new UpdateChecker(this, pluginConfig);
 
@@ -151,9 +155,12 @@ public final class MultiversePortalsPlugin extends JavaPlugin {
         }
 
         getServer().getPluginManager().registerEvents(localPortalListener, this);
-        getServer().getPluginManager().registerEvents(new PortalListener(this, portalService, travelService, portalEffects, localPortalListener), this);
+        this.portalListener = new io.multiverseportals.listener.PortalListener(this, portalService, travelService, portalEffects, localPortalListener);
+        getServer().getPluginManager().registerEvents(portalListener, this);
         getServer().getPluginManager().registerEvents(new PlayerListener(this, travelService, portalEffects), this);
         getServer().getPluginManager().registerEvents(new SignListener(this, pluginConfig, portalService, registry), this);
+        getServer().getPluginManager().registerEvents(new io.multiverseportals.listener.FrameListener(this, portalService), this);
+        getServer().getPluginManager().registerEvents(portalMatter, this);
         getServer().getPluginManager().registerEvents(new ChatReadyListener(this, pluginConfig, consentService), this);
 
         var cmd = getCommand("mvp");
@@ -211,6 +218,11 @@ public final class MultiversePortalsPlugin extends JavaPlugin {
         }, 60L);
         // Wait for MineScan/Cornbread first refresh (~few seconds) before MULTI rebinds
         Bukkit.getScheduler().runTaskLater(this, () -> portalBindService.resumePending(), 20L * 25L);
+        Bukkit.getScheduler().runTaskLater(this, () -> {
+            if (biomePortalService != null) {
+                biomePortalService.resumePending();
+            }
+        }, 20L * 30L);
 
         Bukkit.getScheduler().runTaskLater(this, () -> {
             this.versionCompat = new VersionCompat(getLogger());
@@ -301,6 +313,9 @@ public final class MultiversePortalsPlugin extends JavaPlugin {
         if (portalEffects != null) {
             portalEffects.cancelAll();
         }
+        if (portalMatter != null) {
+            portalMatter.removeAll();
+        }
         if (scoreService != null) {
             scoreService.stopScheduler();
         }
@@ -320,6 +335,33 @@ public final class MultiversePortalsPlugin extends JavaPlugin {
         if (database != null) {
             database.close();
         }
+    }
+
+    private void scheduleRegistryRetry(int attempt) {
+        if (pluginConfig == null || !pluginConfig.registryEnabled()) {
+            return;
+        }
+        long delayTicks = switch (attempt) {
+            case 1 -> 20L * 8L;
+            case 2 -> 20L * 20L;
+            default -> 20L * 45L;
+        };
+        getServer().getScheduler().runTaskLaterAsynchronously(this, () -> {
+            if (registry == null || registry.ready()) {
+                return;
+            }
+            try {
+                registry.init();
+                if (registry.ready()) {
+                    getLogger().info("Central MySQL registry connected on retry " + attempt);
+                }
+            } catch (Exception e) {
+                getLogger().warning("Registry retry " + attempt + " failed: " + e.getMessage());
+                if (attempt < 4) {
+                    scheduleRegistryRetry(attempt + 1);
+                }
+            }
+        }, delayTicks);
     }
 
     public PluginConfig pluginConfig() {
@@ -390,6 +432,14 @@ public final class MultiversePortalsPlugin extends JavaPlugin {
 
     public LocalPortalService localPortalService() {
         return localPortalService;
+    }
+
+    public io.multiverseportals.listener.PortalListener portalListener() {
+        return portalListener;
+    }
+
+    public io.multiverseportals.away.BiomePortalService biomePortalService() {
+        return biomePortalService;
     }
 
     public UpdateChecker updateChecker() {

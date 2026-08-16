@@ -127,4 +127,12 @@ export SERVER_PORT="${PUBLIC_PORT}"
 find /data/plugins -maxdepth 1 -type f -name '*.jar' ! -user 1000 -delete 2>/dev/null || true
 chown -R 1000:1000 /data 2>/dev/null || true
 
+# Latest Geyser/Floodgate/Via* + MultiversePortals (if mp.mvse.ws has a newer jar)
+if [[ -f /image/update-bedrock-bridge.sh ]]; then
+  set +e
+  # shellcheck disable=SC1091
+  . /image/update-bedrock-bridge.sh
+  set -e
+fi
+
 exec /image/scripts/start "$@"

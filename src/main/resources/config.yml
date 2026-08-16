@@ -82,6 +82,7 @@ catalog-share:
 # Open mode: Trust not required (can still use /mvp trust or peers:)
 open-network:
   enabled: true
+  # Legacy. Prefer portals.create: everyone | admin
   everyone-can-create: true
   require-trust: false
   # Accept players arriving from other servers (plugin gate; also writes accepts-transfers)
@@ -140,7 +141,7 @@ scanner:
   max-attempts: 20
   # On travel failure, refresh MineScan once and retry
   refresh-on-fail: true
-  # Keep searching while standing on plate (after ~2s charge)
+  # Keep searching while standing in the opening (after ~2s charge)
   search-max-seconds: 45
   # Bedrock (Floodgate): only transfer to hosts with Geyser on these UDP ports
   require-geyser-for-bedrock: true
@@ -172,10 +173,16 @@ scanner:
   bind-search-seconds: 90
   bind-retry-seconds: 60
   bind-prefer-geyser: true
+  # Public Multi bind: ordinary survival worlds first (Paper/Spigot/Vanilla OK).
+  # Fabric/Forge/modpacks and minigames (bedwars, kitpvp) go later. Survival and skyblock are preferred.
+  prefer-vanilla: true
+  vanilla-score-weight: 40
   # Bedrock creators only — Java creators accept Java-only hosts
   bind-require-geyser: true
   # Dial button / Multi bind: skip hosts already chosen in this window (seconds). 0 = off
   dial-recent-exclude-seconds: 300
+  # Rebind a sticky Random if dest stays unreachable this many days. 0 = off (default)
+  offline-rebind-days: 0
   # Random portals avoid a destination that another portal within this radius (blocks,
   # same world) already leads to. Used as a last resort only. 0 = off
   avoid-duplicate-radius: 100
@@ -238,6 +245,8 @@ ingress:
 travel:
   session-ttl-seconds: 180
   use-transfer-packet: true
+  # When dest has no return portal, a random local portal acts as home for this player
+  guest-home-seconds: 3600
 
 # Update notifications for admins (major.minor only — patch bumps are silent)
 update:
@@ -248,17 +257,53 @@ update:
   # Paper installs it on the next restart. /mvp update still works for a manual pull.
   auto-download: true
 
+# Frame / opening detection (giant closed circles allowed)
+portals:
+  # Chebyshev radius from the sign. Opening must not leak past this.
+  # Multi, Away, and wool rings share this limit.
+  max-frame-radius: 24
+  # Who may build portals (signs + wool): everyone | admin
+  # everyone = all players; admin = OP / multiverseportals.admin
+  # Toggle: /mvp settings create everyone|admin
+  create: everyone
+  # Each type is ON by default. Toggle: /mvp settings type <name> on|off
+  types:
+    away: true    # biome (wood/sand/ice frame + Portal)
+    wool: true    # local color wool (same server)
+    multi: true   # random other servers (open catalog / scanners)
+    pair: true    # two-server pair
+    to: true      # [To] IP or named server
+
+# Local biome portals (wood/sand/ice frame of this biome + "Portal" on the sign)
+# enabled: also portals.types.away
+away:
+  enabled: true
+  require-biome-frame: true
+  # Plugin places a small 4x5 return frame in the dest biome (origin material).
+  # Wall sign hangs on the right jamb when looking at the portal.
+  auto-build-return: true
+  locate-radius: 6400
+  min-distance: 256
+  # Place the auto-built exit near the biome interior, not the nearest edge from locate.
+  prefer-center: true
+  center-max-radius: 2048
+  center-step: 32
+  # Villagers, zombies, NPCs, items: walk through Away like a Nether portal (same world).
+  # Cross-server [Multi]/[Pair]/[To] still only move players (vanilla Transfer).
+  mobs: true
+
 # Portal visuals (leave title/subtitle empty to use lang files)
 effects:
   enabled: true
-  # Warmup while standing on the plate (20 ticks = 1s). Default ~5s.
+  # Warmup while standing in the portal (20 ticks = 1s). Default ~5s.
   charge-ticks: 100
   idle-particles: false
   title: ""
   subtitle: ""
   matter:
     enabled: true
-    # nether | end | gateway
+    # nether = vanilla animated purple sheet (real portal blocks, no Nether transfer)
+    # end | gateway = BlockDisplay cubes (real END_PORTAL would teleport instantly)
     style: nether
     particles: true
 
@@ -267,6 +312,8 @@ score:
   push-interval-seconds: 300
 
 # Local wool portals (ColorPortals-compatible, same server / worlds)
+# Closed ring of one wool color, any size (same portals.max-frame-radius). Walk in — no plate.
+# enabled: also portals.types.wool
 local-portals:
   enabled: true
   walk-on-activation: true

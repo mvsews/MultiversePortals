@@ -26,9 +26,21 @@
 
 面向 **Paper 1.21+** 的跨服传送门插件——**不需要** Bungee / Velocity。
 
-玩家用**告示牌 + 压力板**搭建传送门。游戏使用原版 **Transfer**（Bedrock 走 Geyser）。你的世界既能送玩家出去，也能从公共网络接待来客。
+玩家用**告示牌 + 闭合框架**搭建传送门。压力板可选。游戏使用原版 **Transfer**（Bedrock 走 Geyser）。你的世界既能送玩家出去，也能从公共网络接待来客。
 
-**游戏内语言：** `/mvp lang en|de|ru|zh`
+**能做什么：**
+
+- 在**独立 Paper 服务器**之间传送，无需代理
+- **`[Multi]`** 随机门：找到在线世界并固定绑定
+- **`[To]`** 指向指定 IP / 服务器；**`[Pair]`** 把你自己的两个世界连成往返
+- **Away**：传送到另一个主世界群系（类似下界门，用本群系的木头/沙石/冰做框架）
+- **同服羊毛传送门**（颜色 + 频道，兼容 ColorPortals；任意大小的同色闭合圆环）
+- 任意大小的**闭合框架**内填充原版下界传送门纹理（共用一格柱子的一排传送门互不串孔）
+- **基岩版**玩家可通过 Geyser 使用
+- 对端没有返回门时，本地随机门会充当**一小时回家门**
+- 可设为**所有人**或**仅管理员**建造；每种类型可在配置中单独关闭
+
+**游戏内语言：** `/mvp lang en|de|ru|zh` · [Changelog](CHANGELOG.md)
 
 ---
 
@@ -92,7 +104,7 @@ server:
 docker run -d --name minecraft_mvp --network host -e EULA=TRUE -v mvp-data:/data mvsews/mvp && IP=$(curl -fsS https://api.ipify.org) && echo "Server ready — connect Java $IP:25565 | Bedrock $IP:19132"
 ```
 
-首次启动请等几分钟（下载 Paper + 生成世界）。命令结束会打印连接用的 IP。不设置名字时会自动生成（例如 “Peppery Bridge”）。
+首次启动请等几分钟（下载 Paper + 生成世界）。命令结束会打印连接用的 IP。不设置名字时会自动生成（例如 “Peppery Bridge”）。每次**重启容器**会拉取最新 Geyser/Via*，并在 https://mp.mvse.ws/version.json 版本更新时更新 MultiversePortals（`-e UPDATE_MVP=false` 可跳过插件）。
 
 **常用环境变量**——写在 `-e EULA=TRUE` 旁边：
 
@@ -105,6 +117,8 @@ docker run -d --name minecraft_mvp --network host -e EULA=TRUE -v mvp-data:/data
 | `BEDROCK_PORT` | `19132` | Geyser UDP 端口 |
 | `MEMORY` | `1G` | JVM 内存，例如 `-e MEMORY=2G` |
 | `FLOODGATE_KEY_B64` | （无） | 共享 Floodgate `key.pem` 的 base64——Bedrock 在「自己的」服之间跳转时用 |
+| `UPDATE_BEDROCK_BRIDGE` | `true` | 启动时刷新 Geyser / Floodgate / Via* |
+| `UPDATE_MVP` | `true` | 启动时若目录版本更新则替换 MultiversePortals |
 
 自定义名称和域名示例：
 
@@ -123,17 +137,27 @@ docker run -d --name minecraft_mvp --network host \
 
 ## 传送门类型（告示牌）
 
-第一行 = 类型。旁边放**压力板**。
+第一行 = 类型。墙告示牌挂在**右侧立柱**（面向传送门时）。走进门洞即可（压力板可选）。
 
 | 你写 | 效果 |
 |------|------|
 | `[Multi]` / `[mvp]` / `[portal]` | 找一台在线服并**固定**，拆牌前不会换目标 |
 | `[To]` + IP/端口（或 `server-id`） | 始终去指定目的地 |
 | `[Pair]` | 生成配对码——另一台服填同一码即可往返 |
+| 用**本群系方块**搭框的 `Portal` / `传送门`（第二行空或 `Away`） | 传到**本服**另一个主世界群系（绑定如下界门） |
+
+括号 `[]` / `【】` 和大小写无所谓。第 1 行（以及 `Portal` / `传送门` 下的第 2 行）可用英语、俄语、中文：
+
+| 类型 | EN | RU | ZH |
+|------|----|----|-----|
+| Multi | `Portal` `Multi` `Random` `MVP` | `Портал` `Мульти` `Случайный` `Рандом` | `传送门` `随机` |
+| Away | `Away` | `Авей` `Биом` | `异界` `群系` |
+| To | `To` `Goto` `Server` | `К` `На` `Сервер` | `前往` `到` |
+| Pair | `Pair` `Link` | `Пара` `Связь` | `配对` |
 
 **旋钮：** 随机 `[Multi]` 旁的按钮会切换固定目标（优先俱乐部 MVP 节点）。不适用于 `[To]` / `[Pair]`。
 
-状态：`Portal` → `Scan...` → 短目标名 + `->`（单向）或 `<->`（配对）。
+状态：`Portal` → `Finding a world...` → 短目标名 + `->`（单向）或 `<->`（配对）。
 
 公开单向跳转前，玩家执行一次 **`/mvp ready`**。
 
@@ -145,7 +169,7 @@ docker run -d --name minecraft_mvp --network host \
 
 **服务器 A**
 
-1. 框架 + 告示牌 + 压力板  
+1. 框架 + 告示牌（压力板可选）  
 2. 第 1 行：`[Pair]`（第 2 行空）  
 3. 记下聊天/牌子上的**配对码**  
 
@@ -172,13 +196,25 @@ docker run -d --name minecraft_mvp --network host \
 
 ---
 
+## Away（本服另一个群系）
+
+类似下界门，但在**本服主世界群系**之间传送。
+
+1. 用**本群系方块**搭闭合框架（森林用橡木原木，沙漠用砂岩，冰川用浮冰，……）。任意大小；告示牌挂在**右侧立柱**
+2. 第 1 行 = `Portal` / `传送门`。第 2 行留空或写 `Away` / `异界`
+3. 走进紫色门面 — 第一次会绑定到一个群系（含海洋和洞穴，不含下界/末地）并记住
+
+插件可用**你出发群系**的材料自动搭一座回程小环，告示牌在右侧。框架材料不对时，聊天会提示本群系需要哪种方块。第二行写 `Random` 仍是**跨服**门，即使是橡木框。Away **不会**出现在公开地图上。
+
+---
+
 ## 本服传送门（同世界）
 
 羊毛框 + 告牌（ColorPortals 玩法）：
 
-1. 单一颜色的 **3×4 羊毛**，顶中间挂墙牌  
+1. **同色羊毛**闭合圆环（任意大小；3×4 小门只是常见示例），告示牌挂在**右侧立柱**  
 2. 第 1 行 = **名称**，第 2 行 = **频道**（`0`–`9999`）  
-3. 框内压力板 — 同色同频道组成**本服**环形传送  
+3. 走进紫色门面 — 同色同频道组成**本服**环形传送  
 
 `/mvp local list` · 管理员可用 `/mvp local import-colorportals` 导入旧 ColorPortals 数据。
 
@@ -209,13 +245,18 @@ docker run -d --name minecraft_mvp --network host \
 | **[portal_guide.md](portal_guide.md)** | 玩家（俄语） |
 | **[docs/TECHNICAL.md](docs/TECHNICAL.md)** | 配置、性能、扫描器、构建 |
 | **[docs/REGISTRY.md](docs/REGISTRY.md)** | 公共目录（HTTPS）· 仅中心枢纽运维 |
+| **[CHANGELOG.md](CHANGELOG.md)** | 更新说明 |
+| **[docs/GROWTH.md](docs/GROWTH.md)** | 冷清服引流：利弊（英/俄/德） |
+| **[docs/CONCEPTS.md](docs/CONCEPTS.md)** | 设计意图（框架、Away、回家门、类型开关） |
 | **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** | 架构说明 |
 
 ---
 
 ## 反馈
 
-有想法、发现 bug 或想提建议？请到 GitHub [创建 Issue](https://github.com/mvsews/MultiversePortals/issues/new/choose)。
+如果游戏里的行为**与本 README 或 [docs/CONCEPTS.md](docs/CONCEPTS.md)**（及其他文档）**不符**，请提交 **[Issue](https://github.com/mvsews/MultiversePortals/issues/new/choose)** 或 **[Pull Request](https://github.com/mvsews/MultiversePortals/pulls)**。两者都**欢迎、鼓励**——这样才能让文档里的约定保持诚实。
+
+功能建议同样欢迎。
 
 ---
 

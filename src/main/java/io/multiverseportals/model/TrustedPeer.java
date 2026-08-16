@@ -10,6 +10,10 @@ public final class TrustedPeer {
     private final String sharedSecret;
     private final boolean hasPlugin;
     private PeerPolicy theirPolicy;
+    /** Scanner/SLP brand (Paper, Vanilla, …). Empty when unknown. */
+    private String software = "";
+    /** MC version string from listing or SLP {@code version.name}. */
+    private String version = "";
 
     public TrustedPeer(
             String serverId,
@@ -39,4 +43,13 @@ public final class TrustedPeer {
     public boolean hasPlugin() { return hasPlugin; }
     public PeerPolicy theirPolicy() { return theirPolicy; }
     public void setTheirPolicy(PeerPolicy theirPolicy) { this.theirPolicy = theirPolicy; }
+
+    public String software() { return software; }
+    public String version() { return version; }
+
+    public TrustedPeer withMeta(String software, String version) {
+        this.software = software == null ? "" : software;
+        this.version = version == null ? "" : version;
+        return this;
+    }
 }

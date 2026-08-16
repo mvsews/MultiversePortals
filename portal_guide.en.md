@@ -2,7 +2,7 @@
 
 Short guide for players.
 
-There are **two modes**: local (wool, same server) and cross-server (`[Multi]` / `[To]` / `[Pair]`).
+There are **three modes**: local (wool), cross-server (`[Multi]` / `[To]` / `[Pair]`), and **Away** (another biome on this server).
 
 **Languages:** [English](portal_guide.en.md) · [中文](portal_guide.zh.md) · [Русский](portal_guide.md)
 
@@ -12,14 +12,27 @@ There are **two modes**: local (wool, same server) and cross-server (`[Multi]` /
 
 Like ColorPortals — teleport **on this server** (other worlds on the same host are fine).
 
-1. Frame of **one wool color**, roughly a **3×4** outline
-2. **Wall sign** on the top-middle wool block
-3. Inside: **pressure plate** (optional button under the sign)
-4. **Line 1** = name, **line 2** = channel (`0`–`9999`)
+1. Frame of **one wool color** — any closed ring (a small 3×4 doorway is only an example)
+2. **Wall sign** on the right jamb (looking at the portal)
+3. **Line 1** = name, **line 2** = channel (`0`–`9999`)
 
 Portals with the **same color and channel** form a ring: A→B→C→A. Two portals = round trip.
 
-Stand on the plate or press the button. Right-click the sign for info. List: `/mvp local list`.
+Walk into the **purple opening**. No plate needed (an old plate still works). Optional button under the sign. Right-click the sign for info. List: `/mvp local list`.
+
+---
+
+## Away (another biome, same server)
+
+Like a Nether portal, but between **overworld biomes** on this server.
+
+1. Frame from **this biome’s block**: oak in a forest, sandstone in a desert, packed ice on a glacier, and so on. Any closed ring; **wall sign** on the right jamb
+2. **Line 1** = `Portal` / `Портал` / `传送门`. **Line 2** empty or `Away` / `Авей` / `异界`
+3. Walk into the **purple opening**
+
+The first trip binds to one overworld biome (ocean and caves included; not Nether/End) and stays there, like a Nether portal. The plugin may build a small return ring from **your** biome’s material, sign on the right. If the frame is the wrong block, chat names the one this biome needs.
+
+If line 2 is `Random`, it is a **cross-server** portal even on oak. Away is **not** shown on the public map.
 
 ---
 
@@ -27,33 +40,33 @@ Stand on the plate or press the button. Right-click the sign for info. List: `/m
 
 ### Build a portal
 
-1. Frame like a Nether portal — **2×3** opening (air), any solid blocks around:
+1. Frame like a Nether portal — **2×3** opening (air), any solid blocks around. A **giant closed circle** also works: while the ring is closed the opening shows the vanilla Nether portal sheet; open a gap and the matter vanishes.
 
 ```
 O O O O
 O . . O
-O . . O
+O . . S
 O . . O
 O O O O
 ```
 
-`O` = frame, `.` = air.
+`O` = frame, `.` = air, `S` = sign on the right jamb.
 
-2. Hang a **sign** on the frame.
-3. Place a **pressure plate** next to it (1–2 blocks).
-4. On **line 1** of the sign write the type (case does not matter).
+2. Hang a **sign on the right jamb** (looking at the portal).
+3. On **line 1** of the sign write the type (case does not matter). No plate needed — walk into the purple sheet.
 
-The frame is for the visual “matter” inside. A sign + plate is enough to work.
+The ring must be **closed**. Breaking the sign on Random/Away deletes the portal.
 
 ### Types on line 1
 
 | Line 1 | What it does |
 |--------|----------------|
-| `[Multi]` / `[mvp]` / `[MVP]` / `[portal]` / `[Random]` | Random server (link **sticks**) |
-| `[To]` | Specific server: **IP + port** (lines 2 / 3) or a catalog id |
-| `[Pair]` | Paired portal for round-trip |
+| `[Multi]` / `[portal]` / `Портал` / `传送门` | Random server (link **sticks**) |
+| `[To]` / `К` / `前往` | Specific server: **IP + port** (lines 2 / 3) or a catalog id |
+| `[Pair]` / `Пара` / `配对` | Paired portal for round-trip |
+| `Portal` / `Портал` / `传送门` on a frame of **this biome's material** | Away — another biome on this server (or write `Away` / `Авей` / `异界`) |
 
-Brackets are optional: `mvp`, `portal`, `Multi` also work.
+Away: see [Away](#away-another-biome-same-server) above.
 
 ### Link two of your servers (admin)
 
@@ -77,7 +90,7 @@ English: [README.md](README.md#link-two-of-your-servers-round-trip) · Русс�
 
 ### How to travel
 
-Stand on the **plate** by the sign. Wait for the charge — you will transfer.
+Walk into the **purple opening** (do not stand on the top of the frame). A plate next to it is optional and still works. Wait for the charge — you will transfer.
 
 ### One-way consent (`/mvp ready`)
 
@@ -122,15 +135,15 @@ Details: [README.md](README.md).
 
 ## Server load (admin)
 
-The plugin is **not heavy all the time**, but not zero either. Most work is async; **peaks** are when creating `[Multi]` (Scan… + probes), charging on a plate, or many portals with visuals.
+The plugin is **not heavy all the time**, but not zero either. Most work is async; **peaks** are when creating `[Multi]` (Scan… + probes), charging in the opening, or many portals with visuals.
 
 | What | When | Impact |
 |------|------|--------|
 | Scanners (MineScan + Cornbread) | ~every 1–2 min | HTTP + SQLite — **almost no TPS hit** |
 | Bind on `[Multi]` create | once | background probes — **up to ~90 s** |
-| Travel after bind | standing on plate | ~2 s charge + transfer, **no long search** |
+| Travel after bind | standing in the opening | ~2 s charge + transfer, **no long search** |
 | Matter particles | every 0.5 s | only if a player is **within ~20 blocks** |
-| Local wool portals | plate press | **very light** |
+| Local wool portals | walk in | **very light** |
 
 **Weak VPS (1–2 GB RAM):** fine as a **destination** with 1–2 sticky `[Multi]`. Don’t place dozens of effect-heavy portals or rebuild signs constantly.
 
@@ -164,7 +177,7 @@ In-game: **`/mvp version`** — installed vs latest on mp.mvse.ws.
 
 The plugin will not send you to a server your client cannot join. If there are no targets — “no compatible servers”.
 
-Download the jar from [mp.mvse.ws](https://mp.mvse.ws/) — the filename includes the version (`MultiversePortals-1.1.15.jar`).
+Download the jar from [mp.mvse.ws](https://mp.mvse.ws/) — the filename includes the version (`MultiversePortals-1.2.0.jar`).
 
 ## Admin: `accept-transfers` and the catalog
 
@@ -184,7 +197,7 @@ Transfer address comes from `server-ip` / `server-port` automatically. Set `publ
 |---------|------------|
 | Need `/mvp ready` | Run `/mvp ready` or type `mvp ready` in chat |
 | No compatible servers | Wait / other client version; admin: `/mvp scanner` |
-| Could not find a live server | Step on the plate again |
+| Could not find a live server | Walk into the opening again |
 | Pair portal broken | Relink with a `[Pair]` code |
 | Server not in catalog | `accept-transfers=true`, public IP/domain (not Docker `172.*`), **`public-port` = external port**; see `/mvp settings` → catalog |
 
@@ -199,12 +212,14 @@ Transfer address comes from `server-ip` / `server-port` automatically. Set `publ
 /mvp scanner        — pool size (info)
 ```
 
-Admin toggles: `/mvp settings` (map / guests / inventory).
+Admin toggles: `/mvp settings` (map / guests / inventory / who may create / portal types).
+
+All types (`away`, `wool`, `multi`, `pair`, `to`) are **on** by default. Disable one with `portals.types.multi: false` or `/mvp settings type multi off`. Who may build: `portals.create: everyone` (all players) or `admin` (OP / `multiverseportals.admin` only).
 
 Full admin docs: [README.md](README.md) · [README.ru.md](README.ru.md) · [README.zh.md](README.zh.md).
 
 ## Feedback
 
-Ideas, bugs, or suggestions? Please [open a GitHub Issue](https://github.com/mvsews/MultiversePortals/issues).
+If in-game behavior **does not match** this guide or [docs/CONCEPTS.md](docs/CONCEPTS.md), please [open an Issue](https://github.com/mvsews/MultiversePortals/issues) or a [Pull Request](https://github.com/mvsews/MultiversePortals/pulls). Both are welcome.
 
 **MIT** license — free to distribute and modify. See [LICENSE](LICENSE).

@@ -14,7 +14,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       args:
-        MVP_JAR: build/libs/MultiversePortals-1.1.16.jar
+        MVP_JAR: build/libs/MultiversePortals-1.2.17.jar
     container_name: minecraft_mvp
     restart: unless-stopped
     network_mode: host

@@ -1,5 +1,7 @@
 package io.multiverseportals.command;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import io.multiverseportals.MultiversePortalsPlugin;
 import io.multiverseportals.config.PluginConfig;
@@ -116,6 +118,7 @@ public final class MvpCommand implements CommandExecutor, TabCompleter {
                     + "</aqua> <gray>fed</gray> <white>" + config.federationPort() + config.federationPath() + "</white>");
             case "trust" -> trust(sender, args);
             case "peers" -> peers(sender);
+            case "hops", "peerrep" -> hopsCmd(sender);
             case "policy" -> policy(sender, args);
             case "create" -> create(sender, args);
             case "pair" -> pair(sender, args);
@@ -446,6 +449,8 @@ public final class MvpCommand implements CommandExecutor, TabCompleter {
                 msg(sender, "<yellow>/mvp settings guests on|off</yellow>");
                 msg(sender, "<yellow>/mvp settings export on|off</yellow>");
                 msg(sender, "<yellow>/mvp settings import on|off</yellow>");
+                msg(sender, "<yellow>/mvp settings create everyone|admin</yellow>");
+                msg(sender, "<yellow>/mvp settings type away|wool|multi|pair|to on|off</yellow>");
             }
             return;
         }
@@ -454,8 +459,8 @@ public final class MvpCommand implements CommandExecutor, TabCompleter {
             return;
         }
         String key = args[1].toLowerCase(Locale.ROOT);
-        if (args.length < 3 && !key.equals("status")) {
-            msg(sender, "<yellow>/mvp settings map|guests|export|import on|off</yellow>");
+        if (args.length < 3 && !key.equals("status") && !key.equals("type") && !key.equals("types")) {
+            msg(sender, "<yellow>/mvp settings map|guests|export|import|create|type …</yellow>");
             return;
         }
         switch (key) {
@@ -463,8 +468,20 @@ public final class MvpCommand implements CommandExecutor, TabCompleter {
             case "guests", "guest", "accept", "inbound", "transfers" -> setGuests(sender, parseOnOff(args[2]));
             case "export" -> setExport(sender, parseOnOff(args[2]));
             case "import" -> setImport(sender, parseOnOff(args[2]));
+            case "create", "who", "builders" -> setCreateWho(sender, args[2]);
+            case "type", "types" -> {
+                if (args.length < 3) {
+                    settingsTypes(sender);
+                    return;
+                }
+                if (args.length < 4) {
+                    msg(sender, "<yellow>/mvp settings type away|wool|multi|pair|to on|off</yellow>");
+                    return;
+                }
+                setPortalType(sender, args[2], parseOnOff(args[3]));
+            }
             case "status" -> settingsStatus(sender);
-            default -> msg(sender, "<yellow>/mvp settings map|guests|export|import on|off</yellow>");
+            default -> msg(sender, "<yellow>/mvp settings map|guests|export|import|create|type …</yellow>");
         }
     }
 
@@ -481,7 +498,8 @@ public final class MvpCommand implements CommandExecutor, TabCompleter {
         msg(sender, "<gray>export inventory:</gray> " + onOff(config.defaultExportInventory())
                 + "  <gray>import inventory:</gray> " + onOff(config.defaultImportInventory()));
         msg(sender, "<gray>require-trust:</gray> " + onOff(config.requireTrust())
-                + "  <gray>create:</gray> " + onOff(config.everyoneCanCreate()));
+                + "  <gray>create:</gray> <white>" + config.portalCreateWho() + "</white>");
+        settingsTypes(sender);
         var overrides = config.peerOverrides();
         if (!overrides.isEmpty()) {
             msg(sender, "<gray>peer policies:</gray>");
@@ -563,6 +581,51 @@ public final class MvpCommand implements CommandExecutor, TabCompleter {
         }
     }
 
+    private void setCreateWho(CommandSender sender, String raw) {
+        String v = raw.trim().toLowerCase(Locale.ROOT);
+        if (v.equals("everyone") || v.equals("all") || v.equals("players") || v.equals("player")
+                || v.equals("on") || v.equals("true") || v.equals("yes")) {
+            config.setPortalCreateWho("everyone");
+        } else if (v.equals("admin") || v.equals("admins") || v.equals("op") || v.equals("ops")
+                || v.equals("off") || v.equals("false") || v.equals("no")) {
+            config.setPortalCreateWho("admin");
+        } else {
+            msg(sender, "<yellow>/mvp settings create everyone|admin</yellow>");
+            return;
+        }
+        msg(sender, config.message(sender, "settings-create").replace("%who%", config.portalCreateWho()));
+    }
+
+    private void setPortalType(CommandSender sender, String type, boolean on) {
+        String key = type.trim().toLowerCase(Locale.ROOT);
+        boolean known = false;
+        for (String t : PluginConfig.PORTAL_TYPE_KEYS) {
+            if (t.equals(key)) {
+                known = true;
+                break;
+            }
+        }
+        if (!known) {
+            msg(sender, "<yellow>/mvp settings type away|wool|multi|pair|to on|off</yellow>");
+            return;
+        }
+        config.setPortalTypeEnabled(key, on);
+        msg(sender, config.message(sender, "settings-type")
+                .replace("%type%", key)
+                .replace("%state%", on ? "ON" : "OFF"));
+    }
+
+    private void settingsTypes(CommandSender sender) {
+        StringBuilder sb = new StringBuilder();
+        for (String t : PluginConfig.PORTAL_TYPE_KEYS) {
+            if (!sb.isEmpty()) {
+                sb.append("  ");
+            }
+            sb.append("<gray>").append(t).append(":</gray> ").append(onOff(config.portalTypeEnabled(t)));
+        }
+        msg(sender, sb.toString());
+    }
+
     private static boolean parseOnOff(String raw) {
         String v = raw == null ? "" : raw.trim().toLowerCase(Locale.ROOT);
         return v.equals("on") || v.equals("true") || v.equals("1") || v.equals("yes");
@@ -607,6 +670,61 @@ public final class MvpCommand implements CommandExecutor, TabCompleter {
         }
     }
 
+    /** Local opinion of other servers: +1 success / −1 bounce, plus in/out hop counts. */
+    private void hopsCmd(CommandSender sender) {
+        List<HopEvent> events = db.listHopEvents(30);
+        if (events.isEmpty()) {
+            msg(sender, "<gray>Пока нет записей переходов.</gray>");
+            msg(sender, "<dark_gray>Хаб: GET /mvp/v1/reputation — поле events</dark_gray>");
+            return;
+        }
+        msg(sender, "<gray>Переходы</gray> <dark_gray>(" + events.size() + " последних)</dark_gray>");
+        for (HopEvent e : events) {
+            msg(sender, formatHopEvent(e));
+        }
+        List<PeerEdge> rows = db.listPeerReputation(15);
+        if (!rows.isEmpty()) {
+            msg(sender, "<dark_gray>— сводка по серверам —</dark_gray>");
+            for (PeerEdge e : rows) {
+                msg(sender, formatPeerHop(e.peerServerId(), e.peerHost(), e.peerPort(),
+                        e.reputation(), e.arrived(), e.departed(), e.failed(), e.rejected()));
+            }
+        }
+    }
+
+    private static String formatHopEvent(HopEvent e) {
+        String who = e.playerName() != null && !e.playerName().isBlank() ? e.playerName() : "?";
+        String from = e.fromServer() == null || e.fromServer().isBlank() ? "?" : e.fromServer();
+        String to = e.toServer() != null && !e.toServer().isBlank()
+                ? e.toServer()
+                : ((e.toHost() == null || e.toHost().isBlank() ? "?" : e.toHost())
+                + (e.toPort() > 0 ? ":" + e.toPort() : ""));
+        String oc = e.outcome() == null ? "OK" : e.outcome();
+        String col = "OK".equalsIgnoreCase(oc) ? "green"
+                : ("REFUSED".equalsIgnoreCase(oc) ? "red" : "yellow");
+        return "<white>" + who + "</white> <aqua>" + from + "</aqua> → <aqua>" + to + "</aqua> "
+                + "<" + col + ">" + oc + "</" + col + ">";
+    }
+
+    private static String formatPeerHop(
+            String serverId, String host, int port,
+            int reputation, int arrived, int departed, int failed, int rejected
+    ) {
+        String name = (serverId != null && !serverId.isBlank())
+                ? serverId
+                : ((host == null || host.isBlank() ? "?" : host) + (port > 0 ? ":" + port : ""));
+        String extra = "";
+        if (serverId != null && !serverId.isBlank() && host != null && !host.isBlank()) {
+            extra = " <dark_gray>" + host + (port > 0 ? ":" + port : "") + "</dark_gray>";
+        }
+        String col = reputation > 0 ? "green" : (reputation < 0 ? "red" : "gray");
+        String sign = reputation > 0 ? "+" : "";
+        return "<aqua>" + name + "</aqua>" + extra
+                + " <" + col + ">rep " + sign + reputation + "</" + col + ">"
+                + " <gray>sent " + departed + " · bounced " + failed
+                + " · recv " + arrived + " · refused " + rejected + "</gray>";
+    }
+
     private void policy(CommandSender sender, String[] args) {
         if (!sender.hasPermission("multiverseportals.admin")) {
             return;
@@ -646,7 +764,8 @@ public final class MvpCommand implements CommandExecutor, TabCompleter {
             msg(sender, "<red>Players only.</red>");
             return;
         }
-        if (!player.hasPermission("multiverseportals.create")) {
+        if (!config.canCreatePortals(player)) {
+            msg(sender, config.message(sender, "no-permission-create"));
             return;
         }
         // /mvp create pair|multi [name]
@@ -660,6 +779,11 @@ public final class MvpCommand implements CommandExecutor, TabCompleter {
             return;
         }
         PortalType type = args[1].equalsIgnoreCase("multi") ? PortalType.MULTI : PortalType.PAIR;
+        String kind = type == PortalType.MULTI ? "multi" : "pair";
+        if (!config.portalTypeEnabled(kind)) {
+            msg(sender, config.message(sender, "type-disabled").replace("%type%", kind));
+            return;
+        }
         String name = args.length >= 3 ? args[2] : "portal";
         Portal portal = portals.createFromSign(player, target, type, name);
         if (type == PortalType.PAIR) {
@@ -677,7 +801,12 @@ public final class MvpCommand implements CommandExecutor, TabCompleter {
         if (!(sender instanceof Player player)) {
             return;
         }
-        if (!player.hasPermission("multiverseportals.create")) {
+        if (!config.canCreatePortals(player)) {
+            msg(sender, config.message(sender, "no-permission-create"));
+            return;
+        }
+        if (!config.portalTypeEnabled("pair")) {
+            msg(sender, config.message(sender, "type-disabled").replace("%type%", "pair"));
             return;
         }
         if (args.length < 2) {
@@ -734,7 +863,14 @@ public final class MvpCommand implements CommandExecutor, TabCompleter {
     }
 
     private void multi(CommandSender sender, String[] args) {
-        if (!(sender instanceof Player player) || !player.hasPermission("multiverseportals.create")) {
+        if (!(sender instanceof Player player) || !config.canCreatePortals(player)) {
+            if (sender instanceof Player p) {
+                msg(sender, config.message(p, "no-permission-create"));
+            }
+            return;
+        }
+        if (!config.portalTypeEnabled("multi")) {
+            msg(sender, config.message(sender, "type-disabled").replace("%type%", "multi"));
             return;
         }
         // /mvp multi pool <server,server,...>
@@ -826,10 +962,14 @@ public final class MvpCommand implements CommandExecutor, TabCompleter {
                     String flowTxt = o.has("flowScore")
                             ? String.format(Locale.ROOT, "%.1f", o.get("flowScore").getAsDouble())
                             : "?";
+                    String hopTxt = o.has("hopScore")
+                            ? String.format(Locale.ROOT, "%.1f", o.get("hopScore").getAsDouble())
+                            : "?";
                     msg(sender, "<gray>#" + o.get("rank").getAsInt() + "</gray> "
                             + club + " <white>" + o.get("host").getAsString() + ":" + o.get("javaPort").getAsInt()
                             + "</white> <dark_gray>" + o.get("tier").getAsString() + "</dark_gray>"
                             + " <aqua>on=" + onlineTxt + "</aqua> <yellow>flow=" + flowTxt + "</yellow>"
+                            + " <gold>hop=" + hopTxt + "</gold>"
                             + (o.get("wouldProbe").getAsBoolean() ? " <yellow>probe</yellow>" : skip));
                     if (shown >= 25) {
                         break;
@@ -868,7 +1008,7 @@ public final class MvpCommand implements CommandExecutor, TabCompleter {
             return;
         }
         if (args.length < 2) {
-            msg(sender, "<yellow>/mvp registry list|portals|graph|returns|announce|optin|optout</yellow>");
+            msg(sender, "<yellow>/mvp registry list|portals|graph|returns|hops|announce|optin|optout</yellow>");
             return;
         }
         switch (args[1].toLowerCase(Locale.ROOT)) {
@@ -899,6 +1039,8 @@ public final class MvpCommand implements CommandExecutor, TabCompleter {
                             + "<aqua>" + rs.serverId() + "</aqua> "
                             + "<white>" + rs.publicHost() + ":" + rs.publicPort() + "</white> "
                             + "<gray>" + (rs.mcVersion() == null ? "?" : rs.mcVersion())
+                            + " mvp=" + (rs.caps().mvpVersion() == null || rs.caps().mvpVersion().isBlank()
+                            ? "?" : rs.caps().mvpVersion())
                             + " p" + rs.protocolId() + " via=" + via + "</gray> "
                             + "<" + ageTag + ">ping " + formatPingAge(ageMs) + "</" + ageTag + ">");
                     msg(sender, "  <dark_gray>" + rs.caps().shortLabel()
@@ -966,6 +1108,36 @@ public final class MvpCommand implements CommandExecutor, TabCompleter {
                             + (rp.returnCapable() ? "<green>marked return</green>" : "<yellow>edge exists</yellow>"));
                 }
             }
+            case "hops", "reputation" -> {
+                String from = args.length >= 3 ? args[2] : null;
+                String about = args.length >= 4 ? args[3] : null;
+                JsonObject data = registry.exportPeerReputation(from, about, null, 0, 40);
+                JsonArray events = data.has("events") && data.get("events").isJsonArray()
+                        ? data.getAsJsonArray("events")
+                        : new JsonArray();
+                if (events.isEmpty()) {
+                    msg(sender, "<gray>Хаб ещё не собрал записи переходов.</gray>");
+                    msg(sender, "<dark_gray>Листья пушат hopEvents в catalog announce.</dark_gray>");
+                    return;
+                }
+                msg(sender, "<gray>Хаб: переходы</gray> <dark_gray>(" + events.size() + ")</dark_gray>");
+                int shown = 0;
+                for (JsonElement el : events) {
+                    if (!el.isJsonObject()) {
+                        continue;
+                    }
+                    HopEvent e = HopEvent.fromJson(el.getAsJsonObject());
+                    if (e == null) {
+                        continue;
+                    }
+                    String reporter = e.reporterId() == null ? "?" : e.reporterId();
+                    msg(sender, "<dark_gray>" + reporter + "</dark_gray> " + formatHopEvent(e));
+                    if (++shown >= 40) {
+                        break;
+                    }
+                }
+                msg(sender, "<dark_gray>/mvp registry hops [from] [about]</dark_gray>");
+            }
             case "announce" -> {
                 String motd = net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText()
                         .serialize(Bukkit.motd());
@@ -1007,7 +1179,7 @@ public final class MvpCommand implements CommandExecutor, TabCompleter {
                 registry.setMultiOptIn(false);
                 msg(sender, "<yellow>multi-opt-in OFF — removed from random MULTI pool.</yellow>");
             }
-            default -> msg(sender, "<yellow>/mvp registry list|portals|graph|returns|announce|optin|optout</yellow>");
+            default -> msg(sender, "<yellow>/mvp registry list|portals|graph|returns|hops|announce|optin|optout</yellow>");
         }
     }
 
@@ -1060,6 +1232,11 @@ public final class MvpCommand implements CommandExecutor, TabCompleter {
                 + (pair > 0 ? " <aqua>· pair " + pair + "</aqua>" : "")
                 + (scanning > 0 ? " <yellow>· ищут " + scanning + "</yellow>" : ""));
         msg(sender, "<gray>Пришло на сервер:</gray> <white>" + db.getTotalArrivals() + "</white>");
+        int hopN = db.listPeerReputation(500).size();
+        if (hopN > 0) {
+            msg(sender, "<gray>Пиры (переходы):</gray> <white>" + hopN + "</white>"
+                    + " <dark_gray>· /mvp hops</dark_gray>");
+        }
         if (registry.enabled()) {
             msg(sender, "<gray>Ссылаются на нас:</gray> <white>" + inboundServers + "</white>"
                     + " <gray>сервер(ов)</gray>"
@@ -1126,16 +1303,17 @@ public final class MvpCommand implements CommandExecutor, TabCompleter {
         msg(sender, "<aqua>Multiverse Portals</aqua> — sign portals");
         msg(sender, "<white>/mvp</white> <gray>сводка порталов</gray>");
         msg(sender, "<white>/mvp version</white> <gray>текущая и свежая версия</gray>");
-        msg(sender, "<white>[Multi]</white>/<white>[mvp]</white>/<white>[portal]</white> / <white>[To]</white> / <white>[Pair]</white>");
+        msg(sender, "<white>[Multi]</white>/<white>Портал</white>/<white>传送门</white> / <white>[To]</white>/<white>К</white> / <white>[Pair]</white>/<white>Пара</white>");
         msg(sender, "<gray>Local wool:</gray> name + channel on wall-sign (ColorPortals-style)");
         msg(sender, "<white>/mvp local list|import-colorportals</white>");
         msg(sender, "<white>/mvp ready</white> <gray>one-way consent</gray>");
         msg(sender, "<white>/mvp lang en|de|ru|zh</white> <gray>— server fallback language</gray>");
+        msg(sender, "<white>/mvp hops</white> <gray>репутация пиров (in/out/+−)</gray>");
         msg(sender, "<white>/mvp scanner</white> <gray>public server pool</gray>");
         msg(sender, "<white>/mvp bindpreview</white> <gray>порядок кандидатов [Multi]</gray>");
         msg(sender, "<white>/mvp ingress</white> <gray>inbound limits</gray>");
         msg(sender, "<white>/mvp items</white> <gray>inventory export/import</gray>");
-        msg(sender, "<white>/mvp settings</white> <gray>map / guests / inventory toggles</gray>");
+        msg(sender, "<white>/mvp settings</white> <gray>map / guests / inventory / create / types</gray>");
         msg(sender, "<white>/mvp update</white> <gray>скачать обновление (admin)</gray>");
     }
 
@@ -1158,7 +1336,7 @@ public final class MvpCommand implements CommandExecutor, TabCompleter {
     public @Nullable List<String> onTabComplete(@NotNull CommandSender sender, @NotNull Command command, @NotNull String alias, @NotNull String[] args) {
         if (args.length == 1) {
             return filter(args[0], "help", "status", "stats", "info", "version", "reload", "update", "settings", "items", "ready", "scanner",
-                    "ingress", "deny", "rep", "lang", "trust", "peers", "policy", "create", "pair", "multi",
+                    "ingress", "deny", "rep", "hops", "lang", "trust", "peers", "policy", "create", "pair", "multi",
                     "list", "delete", "score", "registry", "bindpreview", "bindorder", "local");
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("local")) {
@@ -1183,7 +1361,7 @@ public final class MvpCommand implements CommandExecutor, TabCompleter {
             return filter(args[1], "invite", "accept");
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("registry")) {
-            return filter(args[1], "list", "portals", "graph", "returns", "announce", "optin", "optout");
+            return filter(args[1], "list", "portals", "graph", "returns", "hops", "announce", "optin", "optout");
         }
         if (args.length == 3 && args[0].equalsIgnoreCase("registry") && args[1].equalsIgnoreCase("list")) {
             return filter(args[2], "all");
@@ -1195,14 +1373,26 @@ public final class MvpCommand implements CommandExecutor, TabCompleter {
             return filter(args[2], "on", "off");
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("settings")) {
-            return filter(args[1], "map", "guests", "export", "import", "status");
+            return filter(args[1], "map", "guests", "export", "import", "create", "type", "status");
         }
         if (args.length == 3 && args[0].equalsIgnoreCase("settings")) {
             String k = args[1].toLowerCase(Locale.ROOT);
             if (k.equals("map") || k.equals("catalog") || k.equals("list") || k.equals("public")) {
                 return filter(args[2], "on", "off", "auto", "always");
             }
+            if (k.equals("create") || k.equals("who") || k.equals("builders")) {
+                return filter(args[2], "everyone", "admin");
+            }
+            if (k.equals("type") || k.equals("types")) {
+                return filter(args[2], PluginConfig.PORTAL_TYPE_KEYS);
+            }
             return filter(args[2], "on", "off");
+        }
+        if (args.length == 4 && args[0].equalsIgnoreCase("settings")) {
+            String k = args[1].toLowerCase(Locale.ROOT);
+            if (k.equals("type") || k.equals("types")) {
+                return filter(args[3], "on", "off");
+            }
         }
         return List.of();
     }

@@ -1,0 +1,42 @@
+# Cloudflare Flexible → HTTP :80 on origin
+# /              → static landing (www)
+# /download/*    → MultiversePortals.jar
+# /mvp/*         → federation API :25765
+
+{
+	auto_https off
+}
+
+http://mp.mvse.ws, :80 {
+	encode gzip
+
+	handle /mvp/* {
+		reverse_proxy 127.0.0.1:25765
+	}
+
+	handle /download/* {
+		header Cache-Control "no-cache, must-revalidate"
+		header CDN-Cache-Control "no-store"
+		root * /srv/www
+		file_server
+	}
+
+	handle /list {
+		rewrite * /list.html
+		root * /srv/www
+		file_server
+	}
+
+	handle /list/ {
+		rewrite * /list.html
+		root * /srv/www
+		file_server
+	}
+
+	handle {
+		root * /srv/www
+		header Cache-Control "no-cache, must-revalidate"
+		try_files {path} /index.html
+		file_server
+	}
+}

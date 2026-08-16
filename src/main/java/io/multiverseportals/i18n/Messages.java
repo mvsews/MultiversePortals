@@ -7,6 +7,7 @@ import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.File;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
@@ -23,6 +24,13 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class Messages {
 
     public static final Set<String> SUPPORTED = Set.of("en", "de", "ru", "zh");
+
+    private static final Set<String> REFRESH_KEYS = Set.of(
+            "searching-hold",
+            "searching-server",
+            "charge-left-plate",
+            "charge-hold"
+    );
 
     private final JavaPlugin plugin;
     private final Map<String, FileConfiguration> langs = new ConcurrentHashMap<>();
@@ -173,14 +181,37 @@ public final class Messages {
     }
 
     private FileConfiguration loadYaml(String path) {
-        File file = new File(plugin.getDataFolder(), path);
-        if (file.exists()) {
-            return YamlConfiguration.loadConfiguration(file);
-        }
+        YamlConfiguration bundled = new YamlConfiguration();
         InputStream in = plugin.getResource(path);
-        if (in == null) {
-            return new YamlConfiguration();
+        if (in != null) {
+            bundled = YamlConfiguration.loadConfiguration(new InputStreamReader(in, StandardCharsets.UTF_8));
         }
-        return YamlConfiguration.loadConfiguration(new InputStreamReader(in, StandardCharsets.UTF_8));
+        File file = new File(plugin.getDataFolder(), path);
+        if (!file.exists()) {
+            plugin.saveResource(path, false);
+            return bundled;
+        }
+        YamlConfiguration disk = YamlConfiguration.loadConfiguration(file);
+        boolean added = false;
+        for (String key : bundled.getKeys(false)) {
+            String have = disk.getString(key);
+            String bundledVal = bundled.getString(key);
+            if (have == null || have.isBlank()) {
+                disk.set(key, bundledVal);
+                added = true;
+            } else if (REFRESH_KEYS.contains(key) && bundledVal != null && !bundledVal.equals(have)) {
+                disk.set(key, bundledVal);
+                added = true;
+            }
+        }
+        if (added) {
+            try {
+                disk.save(file);
+                plugin.getLogger().info("Updated missing keys in " + path);
+            } catch (IOException e) {
+                plugin.getLogger().warning("Could not update " + path + ": " + e.getMessage());
+            }
+        }
+        return disk;
     }
 }

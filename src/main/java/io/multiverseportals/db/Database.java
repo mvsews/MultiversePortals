@@ -1,9 +1,13 @@
 package io.multiverseportals.db;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import io.multiverseportals.config.PluginConfig;
 import io.multiverseportals.model.*;
+import io.multiverseportals.scanner.HopRank;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.nio.charset.StandardCharsets;
@@ -113,6 +117,27 @@ public final class Database {
             try { st.execute("ALTER TABLE portals ADD COLUMN bound_java_port INTEGER"); } catch (SQLException ignored) {}
             try { st.execute("ALTER TABLE portals ADD COLUMN bound_version TEXT"); } catch (SQLException ignored) {}
             try { st.execute("ALTER TABLE portals ADD COLUMN bound_dest_portal_id TEXT"); } catch (SQLException ignored) {}
+            try { st.execute("ALTER TABLE portals ADD COLUMN bound_last_ok_at INTEGER"); } catch (SQLException ignored) {}
+            try { st.execute("ALTER TABLE portals ADD COLUMN away_dest_biome TEXT"); } catch (SQLException ignored) {}
+            try { st.execute("ALTER TABLE portals ADD COLUMN away_dest_portal_id TEXT"); } catch (SQLException ignored) {}
+            try { st.execute("ALTER TABLE portals ADD COLUMN away_origin_biome TEXT"); } catch (SQLException ignored) {}
+            try { st.execute("ALTER TABLE portals ADD COLUMN away_exit_world TEXT"); } catch (SQLException ignored) {}
+            try { st.execute("ALTER TABLE portals ADD COLUMN away_exit_x INTEGER"); } catch (SQLException ignored) {}
+            try { st.execute("ALTER TABLE portals ADD COLUMN away_exit_y INTEGER"); } catch (SQLException ignored) {}
+            try { st.execute("ALTER TABLE portals ADD COLUMN away_exit_z INTEGER"); } catch (SQLException ignored) {}
+            try { st.execute("ALTER TABLE portals ADD COLUMN away_exit_yaw REAL"); } catch (SQLException ignored) {}
+            st.execute("""
+                CREATE TABLE IF NOT EXISTS guest_home (
+                  player_uuid TEXT PRIMARY KEY,
+                  portal_id TEXT NOT NULL,
+                  dest_host TEXT,
+                  dest_port INTEGER,
+                  dest_java_port INTEGER,
+                  dest_server TEXT,
+                  dest_portal_id TEXT,
+                  expires_at INTEGER NOT NULL
+                )
+                """);
             st.execute("""
                 CREATE TABLE IF NOT EXISTS player_state (
                   uuid TEXT PRIMARY KEY,
@@ -215,6 +240,52 @@ public final class Database {
             st.execute("CREATE INDEX IF NOT EXISTS idx_known_mvp_seen ON known_mvp_servers(last_seen_at DESC)");
             st.execute("CREATE INDEX IF NOT EXISTS idx_known_mvp_score ON known_mvp_servers(score DESC)");
             st.execute("""
+                CREATE TABLE IF NOT EXISTS peer_reputation (
+                  peer_key TEXT PRIMARY KEY,
+                  peer_server_id TEXT,
+                  peer_host TEXT,
+                  peer_port INTEGER NOT NULL DEFAULT 0,
+                  reputation INTEGER NOT NULL DEFAULT 0,
+                  arrived INTEGER NOT NULL DEFAULT 0,
+                  departed INTEGER NOT NULL DEFAULT 0,
+                  failed INTEGER NOT NULL DEFAULT 0,
+                  rejected INTEGER NOT NULL DEFAULT 0,
+                  updated_at INTEGER NOT NULL
+                )
+                """);
+            try { st.execute("ALTER TABLE peer_reputation ADD COLUMN rejected INTEGER NOT NULL DEFAULT 0"); } catch (SQLException ignored) {}
+            st.execute("CREATE INDEX IF NOT EXISTS idx_peer_rep ON peer_reputation(reputation DESC)");
+            st.execute("""
+                CREATE TABLE IF NOT EXISTS hop_events (
+                  id TEXT PRIMARY KEY,
+                  reporter_id TEXT,
+                  player_uuid TEXT,
+                  player_name TEXT,
+                  from_server TEXT,
+                  to_server TEXT,
+                  to_host TEXT,
+                  to_port INTEGER NOT NULL DEFAULT 0,
+                  outcome TEXT NOT NULL,
+                  kind TEXT,
+                  at INTEGER NOT NULL
+                )
+                """);
+            st.execute("CREATE INDEX IF NOT EXISTS idx_hop_events_at ON hop_events(at DESC)");
+            st.execute("CREATE INDEX IF NOT EXISTS idx_hop_events_to ON hop_events(to_server, to_host, to_port)");
+            st.execute("""
+                CREATE TABLE IF NOT EXISTS hub_dest_hops (
+                  peer_key TEXT PRIMARY KEY,
+                  peer_server_id TEXT,
+                  peer_host TEXT,
+                  peer_port INTEGER NOT NULL DEFAULT 0,
+                  succeeded INTEGER NOT NULL DEFAULT 0,
+                  bounced INTEGER NOT NULL DEFAULT 0,
+                  accepted INTEGER NOT NULL DEFAULT 0,
+                  refused INTEGER NOT NULL DEFAULT 0,
+                  updated_at INTEGER NOT NULL
+                )
+                """);
+            st.execute("""
                 CREATE TABLE IF NOT EXISTS local_portals (
                   id TEXT PRIMARY KEY,
                   name TEXT NOT NULL,
@@ -258,10 +329,336 @@ public final class Database {
         if (min <= 0) {
             return;
         }
-        long cur = getTotalArrivals();
-        if (cur < min) {
+        long have = getTotalArrivals();
+        if (have < min) {
             setMetaLong(META_TOTAL_ARRIVALS, min);
         }
+    }
+
+    public void recordPeerEvent(PeerEdge.Kind kind, String serverId, String host, int port) {
+        recordPeerEvent(kind, serverId, host, port, null, null);
+    }
+
+    public void recordPeerEvent(
+            PeerEdge.Kind kind,
+            String serverId,
+            String host,
+            int port,
+            String playerUuid,
+            String playerName
+    ) {
+        if (kind == null) {
+            return;
+        }
+        boolean hasId = serverId != null && !serverId.isBlank();
+        boolean hasHost = host != null && !host.isBlank();
+        if (!hasId && !hasHost) {
+            return;
+        }
+        String key = PeerEdge.key(serverId, host, port);
+        long now = System.currentTimeMillis();
+        int dRep = (kind == PeerEdge.Kind.FAILED || kind == PeerEdge.Kind.REJECTED) ? -1 : 1;
+        int dArr = kind == PeerEdge.Kind.ARRIVED ? 1 : 0;
+        int dDep = kind == PeerEdge.Kind.DEPARTED ? 1 : 0;
+        int dFail = kind == PeerEdge.Kind.FAILED ? 1 : 0;
+        int dRej = kind == PeerEdge.Kind.REJECTED ? 1 : 0;
+        String sid = serverId == null || serverId.isBlank() ? null : serverId.trim();
+        String h = host == null || host.isBlank() ? null : host.trim().toLowerCase(java.util.Locale.ROOT);
+        int p = Math.max(0, port);
+        try (Connection c = connection(); PreparedStatement ps = c.prepareStatement("""
+                INSERT INTO peer_reputation(
+                  peer_key, peer_server_id, peer_host, peer_port,
+                  reputation, arrived, departed, failed, rejected, updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(peer_key) DO UPDATE SET
+                  peer_server_id=COALESCE(excluded.peer_server_id, peer_reputation.peer_server_id),
+                  peer_host=COALESCE(excluded.peer_host, peer_reputation.peer_host),
+                  peer_port=CASE WHEN excluded.peer_port>0 THEN excluded.peer_port ELSE peer_reputation.peer_port END,
+                  reputation=peer_reputation.reputation + excluded.reputation,
+                  arrived=peer_reputation.arrived + excluded.arrived,
+                  departed=peer_reputation.departed + excluded.departed,
+                  failed=peer_reputation.failed + excluded.failed,
+                  rejected=peer_reputation.rejected + excluded.rejected,
+                  updated_at=excluded.updated_at
+                """)) {
+            ps.setString(1, key);
+            ps.setString(2, sid);
+            ps.setString(3, h);
+            ps.setInt(4, p);
+            ps.setInt(5, dRep);
+            ps.setInt(6, dArr);
+            ps.setInt(7, dDep);
+            ps.setInt(8, dFail);
+            ps.setInt(9, dRej);
+            ps.setLong(10, now);
+            ps.executeUpdate();
+            insertHopEvent(kind, sid, h, p, playerUuid, playerName, now);
+        } catch (SQLException e) {
+            plugin.getLogger().warning("peer_reputation: " + e.getMessage());
+        }
+    }
+
+    private void insertHopEvent(
+            PeerEdge.Kind kind,
+            String peerServerId,
+            String host,
+            int port,
+            String playerUuid,
+            String playerName,
+            long at
+    ) {
+        String self = config.serverId();
+        boolean inbound = kind == PeerEdge.Kind.ARRIVED || kind == PeerEdge.Kind.REJECTED;
+        String from = inbound ? peerServerId : self;
+        String to = inbound ? self : peerServerId;
+        String id = UUID.randomUUID().toString();
+        try (Connection c = connection(); PreparedStatement ps = c.prepareStatement("""
+                INSERT INTO hop_events(
+                  id, reporter_id, player_uuid, player_name,
+                  from_server, to_server, to_host, to_port, outcome, kind, at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                """)) {
+            ps.setString(1, id);
+            ps.setString(2, self);
+            ps.setString(3, playerUuid);
+            ps.setString(4, playerName);
+            ps.setString(5, from);
+            ps.setString(6, to);
+            ps.setString(7, host);
+            ps.setInt(8, Math.max(0, port));
+            ps.setString(9, HopEvent.outcomeOf(kind));
+            ps.setString(10, kind.name());
+            ps.setLong(11, at);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            plugin.getLogger().warning("hop_events: " + e.getMessage());
+            return;
+        }
+        try (Connection c = connection(); PreparedStatement ps = c.prepareStatement(
+                "DELETE FROM hop_events WHERE at < ?")) {
+            ps.setLong(1, at - 14L * 86_400_000L);
+            ps.executeUpdate();
+        } catch (SQLException ignored) {
+        }
+    }
+
+    public List<HopEvent> listHopEvents(int limit) {
+        int cap = Math.max(1, Math.min(500, limit));
+        List<HopEvent> out = new ArrayList<>();
+        try (Connection c = readConnection(); PreparedStatement ps = c.prepareStatement("""
+                SELECT id, reporter_id, player_uuid, player_name,
+                       from_server, to_server, to_host, to_port, outcome, kind, at
+                FROM hop_events
+                ORDER BY at DESC
+                LIMIT ?
+                """)) {
+            ps.setInt(1, cap);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.add(new HopEvent(
+                            rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4),
+                            rs.getString(5), rs.getString(6), rs.getString(7), rs.getInt(8),
+                            rs.getString(9), rs.getString(10), rs.getLong(11)));
+                }
+            }
+        } catch (SQLException e) {
+            plugin.getLogger().warning("listHopEvents: " + e.getMessage());
+        }
+        return out;
+    }
+
+    public JsonArray hopEventsJson(int limit) {
+        JsonArray arr = new JsonArray();
+        for (HopEvent e : listHopEvents(limit)) {
+            arr.add(e.toJson());
+        }
+        return arr;
+    }
+
+    public List<PeerEdge> listPeerReputation(int limit) {
+        int cap = Math.max(1, Math.min(500, limit));
+        List<PeerEdge> out = new ArrayList<>();
+        try (Connection c = connection(); PreparedStatement ps = c.prepareStatement("""
+                SELECT peer_server_id, peer_host, peer_port, reputation, arrived, departed, failed,
+                       COALESCE(rejected, 0), updated_at
+                FROM peer_reputation
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """)) {
+            ps.setInt(1, cap);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.add(new PeerEdge(
+                            rs.getString(1),
+                            rs.getString(2),
+                            rs.getInt(3),
+                            rs.getInt(4),
+                            rs.getInt(5),
+                            rs.getInt(6),
+                            rs.getInt(7),
+                            rs.getInt(8),
+                            rs.getLong(9)
+                    ));
+                }
+            }
+        } catch (SQLException e) {
+            plugin.getLogger().warning("listPeerReputation: " + e.getMessage());
+        }
+        return out;
+    }
+
+    public JsonArray peerReputationJson(int limit) {
+        JsonArray arr = new JsonArray();
+        for (PeerEdge e : listPeerReputation(limit)) {
+            arr.add(e.toJson());
+        }
+        return arr;
+    }
+
+    /**
+     * Network-wide dest outcomes pulled from the hub catalog ({@code destHops}).
+     * Fail-open: empty cache just means hop-rank is local-only.
+     */
+    public void upsertHubDestHops(JsonArray dests) {
+        if (dests == null || dests.isEmpty()) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        String sql = """
+            INSERT INTO hub_dest_hops(
+              peer_key, peer_server_id, peer_host, peer_port,
+              succeeded, bounced, accepted, refused, updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(peer_key) DO UPDATE SET
+              peer_server_id=COALESCE(excluded.peer_server_id, hub_dest_hops.peer_server_id),
+              peer_host=COALESCE(excluded.peer_host, hub_dest_hops.peer_host),
+              peer_port=CASE WHEN excluded.peer_port>0 THEN excluded.peer_port ELSE hub_dest_hops.peer_port END,
+              succeeded=excluded.succeeded,
+              bounced=excluded.bounced,
+              accepted=excluded.accepted,
+              refused=excluded.refused,
+              updated_at=excluded.updated_at
+            """;
+        try (Connection c = connection(); PreparedStatement ps = c.prepareStatement(sql)) {
+            int n = 0;
+            for (JsonElement el : dests) {
+                if (!el.isJsonObject()) {
+                    continue;
+                }
+                JsonObject o = el.getAsJsonObject();
+                String sid = jsonStr(o, "serverId");
+                String host = jsonStr(o, "host");
+                int port = o.has("port") && o.get("port").isJsonPrimitive() ? o.get("port").getAsInt() : 0;
+                String key = PeerEdge.key(sid, host, port);
+                ps.setString(1, key);
+                ps.setString(2, sid);
+                ps.setString(3, host);
+                ps.setInt(4, Math.max(0, port));
+                ps.setInt(5, jsonInt(o, "succeeded", "sentOk"));
+                ps.setInt(6, jsonInt(o, "bounced", "failed"));
+                ps.setInt(7, jsonInt(o, "accepted", "receivedOk"));
+                ps.setInt(8, jsonInt(o, "refused", "rejected"));
+                ps.setLong(9, now);
+                ps.addBatch();
+                n++;
+            }
+            if (n > 0) {
+                ps.executeBatch();
+            }
+        } catch (SQLException e) {
+            plugin.getLogger().warning("hub_dest_hops: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Soft Multi-bind bonus for dest {@code serverId}/{@code host}:{@code port}.
+     * Local bounce/success plus hub dest rollup. Missing rows → 0.
+     */
+    public double hopRankScore(String serverId, String host, int port) {
+        int sent = 0;
+        int bounced = 0;
+        PeerEdge local = findPeerReputation(serverId, host, port);
+        if (local != null) {
+            sent += Math.max(0, local.departed());
+            bounced += Math.max(0, local.failed());
+        }
+        int[] hub = findHubDestHops(serverId, host, port);
+        return HopRank.score(sent + hub[0], bounced + hub[1], hub[2], hub[3]);
+    }
+
+    private PeerEdge findPeerReputation(String serverId, String host, int port) {
+        String idKey = (serverId != null && !serverId.isBlank()) ? PeerEdge.key(serverId, null, 0) : null;
+        String hpKey = (host != null && !host.isBlank()) ? PeerEdge.key(null, host, port) : null;
+        try (Connection c = readConnection(); PreparedStatement ps = c.prepareStatement("""
+                SELECT peer_server_id, peer_host, peer_port, reputation, arrived, departed, failed,
+                       COALESCE(rejected, 0), updated_at
+                FROM peer_reputation
+                WHERE peer_key=? OR peer_key=?
+                LIMIT 1
+                """)) {
+            ps.setString(1, idKey == null ? "" : idKey);
+            ps.setString(2, hpKey == null ? "" : hpKey);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return new PeerEdge(
+                            rs.getString(1), rs.getString(2), rs.getInt(3), rs.getInt(4),
+                            rs.getInt(5), rs.getInt(6), rs.getInt(7), rs.getInt(8), rs.getLong(9));
+                }
+            }
+        } catch (SQLException e) {
+            plugin.getLogger().fine("findPeerReputation: " + e.getMessage());
+        }
+        return null;
+    }
+
+    /** succeeded, bounced, accepted, refused */
+    private int[] findHubDestHops(String serverId, String host, int port) {
+        int[] z = new int[4];
+        String idKey = (serverId != null && !serverId.isBlank()) ? PeerEdge.key(serverId, null, 0) : null;
+        String hpKey = (host != null && !host.isBlank()) ? PeerEdge.key(null, host, port) : null;
+        try (Connection c = readConnection(); PreparedStatement ps = c.prepareStatement("""
+                SELECT succeeded, bounced, accepted, refused
+                FROM hub_dest_hops
+                WHERE peer_key=? OR peer_key=?
+                LIMIT 1
+                """)) {
+            ps.setString(1, idKey == null ? "" : idKey);
+            ps.setString(2, hpKey == null ? "" : hpKey);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    z[0] = rs.getInt(1);
+                    z[1] = rs.getInt(2);
+                    z[2] = rs.getInt(3);
+                    z[3] = rs.getInt(4);
+                }
+            }
+        } catch (SQLException ignored) {
+        }
+        return z;
+    }
+
+    private static String jsonStr(JsonObject o, String k) {
+        if (o == null || !o.has(k) || o.get(k).isJsonNull()) {
+            return null;
+        }
+        try {
+            String s = o.get(k).getAsString();
+            return s == null || s.isBlank() ? null : s;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static int jsonInt(JsonObject o, String... keys) {
+        for (String k : keys) {
+            if (o.has(k) && o.get(k).isJsonPrimitive()) {
+                try {
+                    return o.get(k).getAsInt();
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        return 0;
     }
 
     public long getMetaLong(String key, long def) {
@@ -686,8 +1083,10 @@ public final class Database {
     public void savePortal(Portal portal) {
         String sql = """
             INSERT INTO portals(id,type,status,world,x,y,z,yaw,shape_hash,name,creator,pair_server_id,pair_portal_id,pair_invite_code,multi_pool,
-              bound_host,bound_port,bound_java_port,bound_version,bound_dest_portal_id)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+              bound_host,bound_port,bound_java_port,bound_version,bound_dest_portal_id,bound_last_ok_at,
+              away_dest_biome,away_dest_portal_id,away_origin_biome,
+              away_exit_world,away_exit_x,away_exit_y,away_exit_z,away_exit_yaw)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET
               status=excluded.status,
               shape_hash=excluded.shape_hash,
@@ -699,7 +1098,16 @@ public final class Database {
               bound_port=excluded.bound_port,
               bound_java_port=excluded.bound_java_port,
               bound_version=excluded.bound_version,
-              bound_dest_portal_id=excluded.bound_dest_portal_id
+              bound_dest_portal_id=excluded.bound_dest_portal_id,
+              bound_last_ok_at=excluded.bound_last_ok_at,
+              away_dest_biome=excluded.away_dest_biome,
+              away_dest_portal_id=excluded.away_dest_portal_id,
+              away_origin_biome=excluded.away_origin_biome,
+              away_exit_world=excluded.away_exit_world,
+              away_exit_x=excluded.away_exit_x,
+              away_exit_y=excluded.away_exit_y,
+              away_exit_z=excluded.away_exit_z,
+              away_exit_yaw=excluded.away_exit_yaw
             """;
         try (Connection c = connection(); PreparedStatement ps = c.prepareStatement(sql)) {
             PortalFrame f = portal.frame();
@@ -731,6 +1139,28 @@ public final class Database {
             }
             ps.setString(19, portal.boundVersion());
             ps.setString(20, portal.boundDestPortalId());
+            if (portal.boundLastOkAt() > 0) {
+                ps.setLong(21, portal.boundLastOkAt());
+            } else {
+                ps.setNull(21, Types.BIGINT);
+            }
+            ps.setString(22, portal.awayDestBiome());
+            ps.setString(23, portal.awayDestPortalId());
+            ps.setString(24, portal.awayOriginBiome());
+            if (portal.hasAwayExit()) {
+                PortalFrame ex = portal.awayExit();
+                ps.setString(25, ex.world());
+                ps.setInt(26, ex.x());
+                ps.setInt(27, ex.y());
+                ps.setInt(28, ex.z());
+                ps.setFloat(29, ex.yaw());
+            } else {
+                ps.setNull(25, Types.VARCHAR);
+                ps.setNull(26, Types.INTEGER);
+                ps.setNull(27, Types.INTEGER);
+                ps.setNull(28, Types.INTEGER);
+                ps.setNull(29, Types.FLOAT);
+            }
             ps.executeUpdate();
         } catch (SQLException e) {
             throw new IllegalStateException(e);
@@ -862,6 +1292,30 @@ public final class Database {
             }
             portal.setBoundVersion(rs.getString("bound_version"));
             portal.setBoundDestPortalId(rs.getString("bound_dest_portal_id"));
+            try {
+                long ok = rs.getLong("bound_last_ok_at");
+                if (!rs.wasNull()) {
+                    portal.setBoundLastOkAt(ok);
+                }
+            } catch (SQLException ignored) {
+            }
+            try {
+                portal.setAwayDestBiome(rs.getString("away_dest_biome"));
+                portal.setAwayDestPortalId(rs.getString("away_dest_portal_id"));
+                portal.setAwayOriginBiome(rs.getString("away_origin_biome"));
+            } catch (SQLException ignored) {
+            }
+            try {
+                String ew = rs.getString("away_exit_world");
+                if (ew != null && !ew.isBlank()) {
+                    int ex = rs.getInt("away_exit_x");
+                    int ey = rs.getInt("away_exit_y");
+                    int ez = rs.getInt("away_exit_z");
+                    float eyaw = rs.getFloat("away_exit_yaw");
+                    portal.setAwayExit(new PortalFrame(ew, ex, ey, ez, "", eyaw));
+                }
+            } catch (SQLException ignored) {
+            }
         } catch (SQLException ignored) {
             // older schema without bind columns
         }
@@ -1978,6 +2432,101 @@ public final class Database {
                 rs.getInt("z"),
                 creator,
                 rs.getString("linked_portal_id")
+        );
+    }
+
+    public record GuestHome(
+            UUID playerUuid,
+            String portalId,
+            String destHost,
+            int destPort,
+            int destJavaPort,
+            String destServer,
+            String destPortalId,
+            long expiresAt
+    ) {}
+
+    public void saveGuestHome(GuestHome home) {
+        String sql = """
+            INSERT INTO guest_home(player_uuid, portal_id, dest_host, dest_port, dest_java_port, dest_server, dest_portal_id, expires_at)
+            VALUES (?,?,?,?,?,?,?,?)
+            ON CONFLICT(player_uuid) DO UPDATE SET
+              portal_id=excluded.portal_id,
+              dest_host=excluded.dest_host,
+              dest_port=excluded.dest_port,
+              dest_java_port=excluded.dest_java_port,
+              dest_server=excluded.dest_server,
+              dest_portal_id=excluded.dest_portal_id,
+              expires_at=excluded.expires_at
+            """;
+        try (Connection c = connection(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, home.playerUuid().toString());
+            ps.setString(2, home.portalId());
+            ps.setString(3, home.destHost());
+            if (home.destPort() > 0) {
+                ps.setInt(4, home.destPort());
+            } else {
+                ps.setNull(4, Types.INTEGER);
+            }
+            if (home.destJavaPort() > 0) {
+                ps.setInt(5, home.destJavaPort());
+            } else {
+                ps.setNull(5, Types.INTEGER);
+            }
+            ps.setString(6, home.destServer());
+            ps.setString(7, home.destPortalId());
+            ps.setLong(8, home.expiresAt());
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            plugin.getLogger().warning("guest_home save: " + e.getMessage());
+        }
+    }
+
+    public Optional<GuestHome> findGuestHome(UUID playerUuid) {
+        try (Connection c = readConnection(); PreparedStatement ps = c.prepareStatement(
+                "SELECT * FROM guest_home WHERE player_uuid=?")) {
+            ps.setString(1, playerUuid.toString());
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) {
+                    return Optional.empty();
+                }
+                return Optional.of(mapGuestHome(rs));
+            }
+        } catch (SQLException e) {
+            return Optional.empty();
+        }
+    }
+
+    public void deleteGuestHome(UUID playerUuid) {
+        try (Connection c = connection(); PreparedStatement ps = c.prepareStatement(
+                "DELETE FROM guest_home WHERE player_uuid=?")) {
+            ps.setString(1, playerUuid.toString());
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            plugin.getLogger().warning("guest_home delete: " + e.getMessage());
+        }
+    }
+
+    public void deleteGuestHomesForPortal(String portalId) {
+        try (Connection c = connection(); PreparedStatement ps = c.prepareStatement(
+                "DELETE FROM guest_home WHERE portal_id=?")) {
+            ps.setString(1, portalId);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            plugin.getLogger().warning("guest_home delete by portal: " + e.getMessage());
+        }
+    }
+
+    private static GuestHome mapGuestHome(ResultSet rs) throws SQLException {
+        return new GuestHome(
+                UUID.fromString(rs.getString("player_uuid")),
+                rs.getString("portal_id"),
+                rs.getString("dest_host"),
+                rs.getInt("dest_port"),
+                rs.getInt("dest_java_port"),
+                rs.getString("dest_server"),
+                rs.getString("dest_portal_id"),
+                rs.getLong("expires_at")
         );
     }
 }

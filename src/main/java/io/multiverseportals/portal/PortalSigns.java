@@ -10,12 +10,14 @@ import org.bukkit.Bukkit;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.Sign;
+import org.bukkit.block.sign.Side;
+import org.bukkit.plugin.Plugin;
 
 /**
  * Sign layout for federation portals:
  * <pre>
  *  Portal
- *  Scan...          |  ShortServerName (color from name)
+ *  Finding a world... |  ShortServerName (color from name)
  *  ->  or  <->
  *  [invite code while pairing]
  * </pre>
@@ -27,6 +29,37 @@ public final class PortalSigns {
     private PortalSigns() {}
 
     public static void update(Portal portal) {
+        paint(portal);
+    }
+
+    /** Re-paint after a tick so Geyser / client tile-entities pick up the bound name. */
+    public static void updateSticky(Portal portal) {
+        paint(portal);
+        Plugin plugin = Bukkit.getPluginManager().getPlugin("MultiversePortals");
+        if (plugin == null || !plugin.isEnabled() || portal == null) {
+            return;
+        }
+        String id = portal.id();
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            io.multiverseportals.model.Portal live = portal;
+            var dbPlugin = plugin instanceof io.multiverseportals.MultiversePortalsPlugin mvp
+                    ? mvp : null;
+            if (dbPlugin != null) {
+                live = dbPlugin.database().findPortal(id).orElse(null);
+            }
+            if (live != null) {
+                paint(live);
+            }
+        }, 3L);
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            if (!(plugin instanceof io.multiverseportals.MultiversePortalsPlugin mvp)) {
+                return;
+            }
+            mvp.database().findPortal(id).ifPresent(PortalSigns::paint);
+        }, 20L);
+    }
+
+    private static void paint(Portal portal) {
         if (portal == null || portal.frame() == null) {
             return;
         }
@@ -35,34 +68,66 @@ public final class PortalSigns {
             return;
         }
         Block block = world.getBlockAt(portal.frame().x(), portal.frame().y(), portal.frame().z());
+        if (!block.getChunk().isLoaded()) {
+            block.getChunk().load();
+        }
         if (!(block.getState() instanceof Sign sign)) {
             return;
         }
 
-        sign.line(0, Component.text("Portal").color(NamedTextColor.GOLD));
+        write(sign, 0, Component.text("Portal").color(NamedTextColor.GOLD));
 
-        if (isReady(portal)) {
+        if (portal.type() == PortalType.AWAY) {
+            if (portal.hasAwayDestination()) {
+                String label = io.multiverseportals.away.BiomeColors.prettyName(portal.awayDestBiome());
+                write(sign, 1, Component.text(truncate(label, NAME_MAX))
+                        .color(io.multiverseportals.away.BiomeColors.of(portal.awayDestBiome())));
+            } else {
+                write(sign, 1, Component.text("Away...").color(NamedTextColor.GRAY));
+            }
+        } else if (hasVisibleDestination(portal)) {
             String label = destinationLabel(portal);
-            sign.line(1, Component.text(truncate(label, NAME_MAX)).color(colorFromName(label)));
+            write(sign, 1, Component.text(truncate(label, NAME_MAX)).color(colorFromName(label)));
         } else {
-            sign.line(1, Component.text("Scan...").color(NamedTextColor.GRAY));
+            write(sign, 1, Component.text("Finding a world...").color(NamedTextColor.GRAY));
         }
 
-        sign.line(2, Component.text(directionGlyph(portal)).color(NamedTextColor.DARK_AQUA));
+        write(sign, 2, Component.text(directionGlyph(portal)).color(NamedTextColor.DARK_AQUA));
 
         if (portal.type() == PortalType.PAIR
                 && portal.status() == PortalStatus.PENDING_PAIR
                 && portal.pairInviteCode() != null
                 && !portal.pairInviteCode().isBlank()) {
-            sign.line(3, Component.text(truncate(portal.pairInviteCode(), NAME_MAX)).color(NamedTextColor.DARK_GRAY));
+            write(sign, 3, Component.text(truncate(portal.pairInviteCode(), NAME_MAX)).color(NamedTextColor.DARK_GRAY));
         } else {
-            sign.line(3, Component.empty());
+            write(sign, 3, Component.empty());
         }
 
         sign.update(true);
     }
 
+    private static void write(Sign sign, int line, Component text) {
+        sign.getSide(Side.FRONT).line(line, text);
+        sign.getSide(Side.BACK).line(line, text);
+    }
+
+    /** Bound dest is shown even if status flickered off ACTIVE (heartbeat false-broken). */
+    public static boolean hasVisibleDestination(Portal portal) {
+        if (portal.type() == PortalType.AWAY) {
+            return portal.hasAwayDestination();
+        }
+        if (portal.type() == PortalType.MULTI) {
+            return portal.hasBoundDestination();
+        }
+        return portal.status() == PortalStatus.ACTIVE
+                && portal.pairServerId() != null
+                && !portal.pairServerId().isBlank();
+    }
+
     public static boolean isReady(Portal portal) {
+        if (portal.type() == PortalType.AWAY) {
+            return portal.status() == PortalStatus.ACTIVE && portal.hasAwayDestination();
+        }
         if (portal.type() == PortalType.MULTI) {
             return portal.status() == PortalStatus.ACTIVE && portal.hasBoundDestination();
         }
@@ -87,7 +152,6 @@ public final class PortalSigns {
         if (host == null || host.isBlank()) {
             return "?";
         }
-        // drop trailing domain bits for readability when needed
         return host;
     }
 
@@ -107,7 +171,6 @@ public final class PortalSigns {
             return NamedTextColor.AQUA;
         }
         int h = name.hashCode();
-        // Stable pleasant hue from name; avoid too-dark values for sign readability
         float hue = Integer.remainderUnsigned(h, 360) / 360f;
         float sat = Math.min(0.9f, 0.55f + (Integer.remainderUnsigned(h >>> 8, 35) / 100f));
         float bri = Math.min(1f, 0.85f + (Integer.remainderUnsigned(h >>> 16, 15) / 100f));
@@ -144,7 +207,6 @@ public final class PortalSigns {
                 .replace('\n', ' ')
                 .replace('\r', ' ')
                 .trim();
-        // collapse whitespace
         s = s.replaceAll("\\s+", " ");
         return s;
     }

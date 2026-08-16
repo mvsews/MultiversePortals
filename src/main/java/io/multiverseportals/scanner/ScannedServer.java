@@ -84,7 +84,7 @@ public final class ScannedServer {
                 port,
                 "",
                 false
-        );
+        ).withMeta(software, version);
     }
 
     /** Prefer MOTD, else host — used as portal sign destination name. */

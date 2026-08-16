@@ -2,8 +2,10 @@ package io.multiverseportals.portal;
 
 import io.multiverseportals.MultiversePortalsPlugin;
 import io.multiverseportals.config.PluginConfig;
+import io.multiverseportals.local.WoolFrame;
 import io.multiverseportals.model.Portal;
 import io.multiverseportals.model.PortalType;
+import io.multiverseportals.util.ShapeHasher;
 import org.bukkit.Axis;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
@@ -19,27 +21,49 @@ import org.bukkit.block.data.type.WallSign;
 import org.bukkit.entity.BlockDisplay;
 import org.bukkit.entity.Display;
 import org.bukkit.entity.Entity;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
+import org.bukkit.event.Listener;
+import io.papermc.paper.event.entity.EntityInsideBlockEvent;
+import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.block.BlockExplodeEvent;
+import org.bukkit.event.block.BlockFromToEvent;
+import org.bukkit.event.block.BlockPhysicsEvent;
+import org.bukkit.event.block.BlockPlaceEvent;
+import org.bukkit.event.entity.EntityExplodeEvent;
+import org.bukkit.event.entity.EntityPortalEnterEvent;
+import org.bukkit.event.entity.EntityPortalEvent;
+import org.bukkit.event.player.PlayerBucketEmptyEvent;
+import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerPortalEvent;
+import org.bukkit.event.player.PlayerTeleportEvent;
+import org.bukkit.event.world.PortalCreateEvent;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.util.Transformation;
 import org.joml.AxisAngle4f;
 import org.joml.Vector3f;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
- * Fills the portal opening with nether/end-like "matter" using BlockDisplay
- * (looks like portal blocks between the frame) + dense particles.
+ * Fills a closed portal opening with vanilla nether-portal blocks (animated purple sheet).
+ * Physics and Nether transfer are cancelled so any frame shape can hold the texture.
  */
-public final class PortalMatter {
+public final class PortalMatter implements Listener {
 
     public static final String TAG_PREFIX = "mvp_matter_";
 
     private final MultiversePortalsPlugin plugin;
     private final PluginConfig config;
     private final org.bukkit.NamespacedKey keyPortalId;
+    /** portalId → packed cell keys (world|x|y|z). */
+    private final Map<String, Set<String>> cellsByPortal = new HashMap<>();
+    private final Map<String, String> portalByCell = new HashMap<>();
 
     public PortalMatter(MultiversePortalsPlugin plugin, PluginConfig config) {
         this.plugin = plugin;
@@ -60,8 +84,10 @@ public final class PortalMatter {
                 || portal.status() == io.multiverseportals.model.PortalStatus.PENDING_PAIR) {
             return;
         }
-        // MULTI only shows purple matter after a destination is bound
         if (portal.type() == PortalType.MULTI && !portal.hasBoundDestination()) {
+            return;
+        }
+        if (portal.type() == PortalType.AWAY && !portal.hasAwayDestination()) {
             return;
         }
         World world = Bukkit.getWorld(portal.frame().world());
@@ -69,19 +95,70 @@ public final class PortalMatter {
             return;
         }
         Block sign = world.getBlockAt(portal.frame().x(), portal.frame().y(), portal.frame().z());
-        List<Location> cells = findOpeningCells(sign);
+        FrameDetector.Scan scan = FrameDetector.scan(sign, config.maxFrameRadius());
+        List<Location> cells = new ArrayList<>();
+        if (scan.closed() && !scan.interior().isEmpty()) {
+            cells.addAll(scan.interior());
+        }
         if (cells.isEmpty()) {
-            // fallback: 2x3 in front of wall sign
             cells = fallbackOpening(sign);
         }
-        Axis axis = detectAxis(cells);
-        Material look = matterMaterial(portal);
+        Axis axis = scan.closed() ? scan.axis() : detectAxis(cells);
+        Material look = matterMaterial();
+        boolean realNether = look == Material.NETHER_PORTAL;
         for (Location cell : cells) {
-            spawnMatterBlock(world, cell, look, axis, portal.id());
+            Block block = world.getBlockAt(cell.getBlockX(), cell.getBlockY(), cell.getBlockZ());
+            String occupied = portalByCell.get(cellKey(block));
+            if (occupied != null && !occupied.equals(portal.id())) {
+                continue;
+            }
+            if (realNether) {
+                placeNetherSheet(world, cell, axis, portal.id());
+            } else {
+                spawnMatterBlock(world, cell, look, axis, portal.id());
+            }
+        }
+    }
+
+    /** Fill an opening (network or local wool) with the purple sheet. */
+    public void fillOpening(String portalId, World world, List<Location> cells, Axis axis) {
+        if (!config.matterEnabled() || portalId == null || world == null || cells == null || cells.isEmpty()) {
+            return;
+        }
+        remove(portalId);
+        Material look = matterMaterial();
+        boolean realNether = look == Material.NETHER_PORTAL;
+        for (Location cell : cells) {
+            Block block = world.getBlockAt(cell.getBlockX(), cell.getBlockY(), cell.getBlockZ());
+            String occupied = portalByCell.get(cellKey(block));
+            if (occupied != null && !occupied.equals(portalId)) {
+                continue;
+            }
+            if (ShapeHasher.isPressurePlate(block.getType())) {
+                block.setType(Material.AIR, false);
+            }
+            if (realNether) {
+                placeNetherSheet(world, cell, axis, portalId);
+            } else {
+                spawnMatterBlock(world, cell, look, axis, portalId);
+            }
         }
     }
 
     public void remove(String portalId) {
+        Set<String> cells = cellsByPortal.remove(portalId);
+        if (cells != null) {
+            for (String key : cells) {
+                if (!portalId.equals(portalByCell.get(key))) {
+                    continue;
+                }
+                portalByCell.remove(key);
+                Block b = blockFromKey(key);
+                if (b != null && b.getType() == Material.NETHER_PORTAL) {
+                    b.setType(Material.AIR, false);
+                }
+            }
+        }
         String tag = TAG_PREFIX + portalId;
         for (World world : Bukkit.getWorlds()) {
             for (Entity e : world.getEntitiesByClass(BlockDisplay.class)) {
@@ -94,6 +171,11 @@ public final class PortalMatter {
     }
 
     public void removeAll() {
+        for (String id : new ArrayList<>(cellsByPortal.keySet())) {
+            remove(id);
+        }
+        cellsByPortal.clear();
+        portalByCell.clear();
         for (World world : Bukkit.getWorlds()) {
             for (Entity e : world.getEntitiesByClass(BlockDisplay.class)) {
                 for (String tag : e.getScoreboardTags()) {
@@ -114,16 +196,235 @@ public final class PortalMatter {
         });
     }
 
-    /** Dense portal particles inside each matter cell (call periodically). */
+    public boolean isMatterBlock(Block block) {
+        return block != null && portalByCell.containsKey(cellKey(block));
+    }
+
+    /** True if this location is standing in / next to our fake Nether sheet. */
+    public boolean inOurSheet(Location loc) {
+        return nearOurPortal(loc);
+    }
+
+    public Location standInFront(Location loc) {
+        if (loc == null || loc.getWorld() == null || !nearOurPortal(loc)) {
+            return null;
+        }
+        World world = loc.getWorld();
+        String id = portalIdNear(loc);
+        BlockFace face = BlockFace.SOUTH;
+        if (id != null) {
+            var portal = plugin.database().findPortal(id).orElse(null);
+            if (portal != null) {
+                Block sign = world.getBlockAt(portal.frame().x(), portal.frame().y(), portal.frame().z());
+                face = FrameDetector.facingOf(sign);
+                Location stand = new Location(
+                        world,
+                        sign.getX() + 0.5 + face.getModX() * 1.2,
+                        loc.getY(),
+                        sign.getZ() + 0.5 + face.getModZ() * 1.2,
+                        io.multiverseportals.away.AwayFrameBuilder.yawOf(face),
+                        loc.getPitch()
+                );
+                if (stand.getBlock().getType() == Material.NETHER_PORTAL
+                        || stand.clone().add(0, 1, 0).getBlock().getType() == Material.NETHER_PORTAL) {
+                    stand.add(face.getModX(), 0, face.getModZ());
+                }
+                return stand;
+            }
+            var locals = plugin.localPortalService();
+            if (locals != null) {
+                var local = locals.findById(id).orElse(null);
+                if (local != null) {
+                    Block sign = world.getBlockAt(local.x(), local.y(), local.z());
+                    return WoolFrame.arrivalLocation(sign, plugin.pluginConfig().maxFrameRadius());
+                }
+            }
+        }
+        Block sheet = loc.getBlock();
+        if (sheet.getType() != Material.NETHER_PORTAL) {
+            sheet = sheet.getRelative(BlockFace.DOWN);
+        }
+        if (sheet.getBlockData() instanceof Orientable orientable) {
+            face = orientable.getAxis() == Axis.X ? BlockFace.SOUTH : BlockFace.EAST;
+        }
+        Location stand = loc.clone().add(face.getModX() * 1.5, 0, face.getModZ() * 1.5);
+        stand.setYaw(io.multiverseportals.away.AwayFrameBuilder.yawOf(face));
+        return stand;
+    }
+
+    private String portalIdNear(Location loc) {
+        World world = loc.getWorld();
+        int x = loc.getBlockX();
+        int y = loc.getBlockY();
+        int z = loc.getBlockZ();
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dy = -1; dy <= 2; dy++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    Block b = world.getBlockAt(x + dx, y + dy, z + dz);
+                    String id = portalByCell.get(cellKey(b));
+                    if (id != null) {
+                        return id;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    public void ejectFromSheet(org.bukkit.entity.Player player) {
+        if (player == null || !player.isOnline()) {
+            return;
+        }
+        Location safe = standInFront(player.getLocation());
+        if (safe == null) {
+            return;
+        }
+        player.setPortalCooldown(300);
+        player.teleport(safe);
+    }
+
+    @EventHandler(priority = EventPriority.LOWEST)
+    public void onJoinInSheet(PlayerJoinEvent event) {
+        org.bukkit.entity.Player player = event.getPlayer();
+        if (!inOurSheet(player.getLocation())) {
+            return;
+        }
+        player.setPortalCooldown(300);
+        Bukkit.getScheduler().runTask(plugin, () -> ejectFromSheet(player));
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onPhysics(BlockPhysicsEvent event) {
+        if (event.getBlock().getType() == Material.NETHER_PORTAL && isMatterBlock(event.getBlock())) {
+            event.setCancelled(true);
+        }
+        if (event.getChangedType() == Material.NETHER_PORTAL && isMatterBlock(event.getBlock())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onWater(BlockFromToEvent event) {
+        if (isMatterBlock(event.getToBlock())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onBreakMatter(BlockBreakEvent event) {
+        if (!isMatterBlock(event.getBlock())) {
+            return;
+        }
+        event.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onInside(EntityInsideBlockEvent event) {
+        if (event.getBlock().getType() != Material.NETHER_PORTAL || !isMatterBlock(event.getBlock())) {
+            return;
+        }
+        event.setCancelled(true);
+        Location loc = event.getBlock().getLocation();
+        var listener = plugin.portalListener();
+        if (listener == null) {
+            return;
+        }
+        if (event.getEntity() instanceof org.bukkit.entity.Player player) {
+            listener.tryActivateFromInside(player, loc);
+        } else if (event.getEntity() instanceof org.bukkit.entity.LivingEntity living) {
+            listener.tryActivateEntityFromInside(living, loc);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onPlayerNether(PlayerPortalEvent event) {
+        if (nearOurPortal(event.getFrom()) || nearOurPortal(event.getTo())) {
+            event.setCancelled(true);
+            ejectFromSheet(event.getPlayer());
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onEntityNether(EntityPortalEvent event) {
+        if (event.getFrom() != null && nearOurPortal(event.getFrom())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onEnter(EntityPortalEnterEvent event) {
+        if (nearOurPortal(event.getEntity().getLocation())) {
+            event.setCancelled(true);
+            if (event.getEntity() instanceof org.bukkit.entity.Player player) {
+                player.setPortalCooldown(300);
+            }
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onTeleport(PlayerTeleportEvent event) {
+        if (event.getCause() == PlayerTeleportEvent.TeleportCause.NETHER_PORTAL
+                && (nearOurPortal(event.getFrom()) || nearOurPortal(event.getTo()))) {
+            event.setCancelled(true);
+            ejectFromSheet(event.getPlayer());
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onPortalCreate(PortalCreateEvent event) {
+        if (event.getEntity() != null && nearOurPortal(event.getEntity().getLocation())) {
+            event.setCancelled(true);
+            return;
+        }
+        for (org.bukkit.block.BlockState state : event.getBlocks()) {
+            if (isMatterBlock(state.getBlock())) {
+                event.setCancelled(true);
+                return;
+            }
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onPlaceOver(BlockPlaceEvent event) {
+        if (isMatterBlock(event.getBlock())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onBucket(PlayerBucketEmptyEvent event) {
+        Block into = event.getBlockClicked().getRelative(event.getBlockFace());
+        if (isMatterBlock(into) || isMatterBlock(event.getBlockClicked())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onExplode(EntityExplodeEvent event) {
+        event.blockList().removeIf(this::isMatterBlock);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onBlockExplode(BlockExplodeEvent event) {
+        event.blockList().removeIf(this::isMatterBlock);
+    }
+
+    /** Vanilla portal blocks already swirl; extra particles only for BlockDisplay styles. */
     public void tickParticles(Portal portal) {
         if (!config.matterEnabled() || !config.matterParticles()) {
             return;
         }
+        if ("nether".equalsIgnoreCase(config.matterStyle())) {
+            return;
+        }
         if (portal.status() == io.multiverseportals.model.PortalStatus.BINDING
                 || portal.status() == io.multiverseportals.model.PortalStatus.BIND_FAILED) {
-            return; // white FX owned by PortalBindService
+            return;
         }
         if (portal.type() == PortalType.MULTI && !portal.hasBoundDestination()) {
+            return;
+        }
+        if (portal.type() == PortalType.AWAY && !portal.hasAwayDestination()) {
             return;
         }
         World world = Bukkit.getWorld(portal.frame().world());
@@ -137,7 +438,6 @@ public final class PortalMatter {
                 continue;
             }
             Location c = e.getLocation().add(0.5, 0.5, 0.5);
-            // only if player nearby
             boolean near = false;
             for (var p : world.getPlayers()) {
                 if (p.getLocation().distanceSquared(c) < 400) {
@@ -153,6 +453,43 @@ public final class PortalMatter {
                 world.spawnParticle(Particle.END_ROD, c, 1, 0.2, 0.2, 0.2, 0.01);
             }
         }
+    }
+
+    private void placeNetherSheet(World world, Location cell, Axis axis, String portalId) {
+        Block block = world.getBlockAt(cell.getBlockX(), cell.getBlockY(), cell.getBlockZ());
+        if (!FrameDetector.isPassable(block.getType()) && block.getType() != Material.NETHER_PORTAL) {
+            return;
+        }
+        BlockData data = Material.NETHER_PORTAL.createBlockData();
+        if (data instanceof Orientable orientable) {
+            orientable.setAxis(axis == Axis.Z ? Axis.Z : Axis.X);
+            data = orientable;
+        }
+        String key = cellKey(block);
+        portalByCell.put(key, portalId);
+        cellsByPortal.computeIfAbsent(portalId, id -> new HashSet<>()).add(key);
+        block.setBlockData(data, false);
+    }
+
+    private boolean nearOurPortal(Location loc) {
+        if (loc == null || loc.getWorld() == null) {
+            return false;
+        }
+        World world = loc.getWorld();
+        int x = loc.getBlockX();
+        int y = loc.getBlockY();
+        int z = loc.getBlockZ();
+        for (int dx = -2; dx <= 2; dx++) {
+            for (int dy = -1; dy <= 2; dy++) {
+                for (int dz = -2; dz <= 2; dz++) {
+                    Block b = world.getBlockAt(x + dx, y + dy, z + dz);
+                    if (b.getType() == Material.NETHER_PORTAL && isMatterBlock(b)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
     private void spawnMatterBlock(World world, Location cell, Material look, Axis axis, String portalId) {
@@ -184,6 +521,26 @@ public final class PortalMatter {
         });
     }
 
+    private static String cellKey(Block block) {
+        return block.getWorld().getName() + "|" + block.getX() + "|" + block.getY() + "|" + block.getZ();
+    }
+
+    private Block blockFromKey(String key) {
+        String[] p = key.split("\\|");
+        if (p.length != 4) {
+            return null;
+        }
+        World world = Bukkit.getWorld(p[0]);
+        if (world == null) {
+            return null;
+        }
+        try {
+            return world.getBlockAt(Integer.parseInt(p[1]), Integer.parseInt(p[2]), Integer.parseInt(p[3]));
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
     private static Axis detectAxis(List<Location> cells) {
         if (cells.isEmpty()) {
             return Axis.X;
@@ -196,11 +553,10 @@ public final class PortalMatter {
             minZ = Math.min(minZ, c.getBlockZ());
             maxZ = Math.max(maxZ, c.getBlockZ());
         }
-        // Wider along X → portal plane faces Z (nether portal axis X)
         return (maxX - minX) >= (maxZ - minZ) ? Axis.X : Axis.Z;
     }
 
-    private Material matterMaterial(Portal portal) {
+    private Material matterMaterial() {
         String style = config.matterStyle();
         if ("end".equalsIgnoreCase(style)) {
             return Material.END_PORTAL;
@@ -208,71 +564,26 @@ public final class PortalMatter {
         if ("gateway".equalsIgnoreCase(style)) {
             return Material.END_GATEWAY;
         }
-        // nether portal block texture (works as BlockDisplay without valid frame)
         return Material.NETHER_PORTAL;
     }
 
-    /**
-     * Find air blocks that look like the interior of a portal frame near the sign.
-     */
     public static List<Location> findOpeningCells(Block sign) {
-        World world = sign.getWorld();
-        Set<Long> found = new HashSet<>();
-        List<Location> out = new ArrayList<>();
-
-        int sx = sign.getX();
-        int sy = sign.getY();
-        int sz = sign.getZ();
-
-        for (int dx = -3; dx <= 3; dx++) {
-            for (int dy = -1; dy <= 4; dy++) {
-                for (int dz = -3; dz <= 3; dz++) {
-                    Block b = world.getBlockAt(sx + dx, sy + dy, sz + dz);
-                    if (!b.getType().isAir()) {
-                        continue;
-                    }
-                    int solid = 0;
-                    for (BlockFace f : new BlockFace[]{
-                            BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST,
-                            BlockFace.UP, BlockFace.DOWN
-                    }) {
-                        if (b.getRelative(f).getType().isSolid()) {
-                            solid++;
-                        }
-                    }
-                    // Interior of a frame: several solid neighbors
-                    if (solid < 2) {
-                        continue;
-                    }
-                    // Prefer blocks that sit in a vertical shaft / opening (solid left-right or N-S)
-                    boolean verticalSlot =
-                            (b.getRelative(BlockFace.EAST).getType().isSolid()
-                                    && b.getRelative(BlockFace.WEST).getType().isSolid())
-                                    || (b.getRelative(BlockFace.NORTH).getType().isSolid()
-                                    && b.getRelative(BlockFace.SOUTH).getType().isSolid());
-                    if (!verticalSlot && solid < 3) {
-                        continue;
-                    }
-                    long key = (((long) b.getX()) << 42) ^ (((long) b.getZ()) << 21) ^ b.getY();
-                    if (found.add(key)) {
-                        out.add(b.getLocation());
-                    }
-                }
-            }
-        }
-
-        // Cap size — avoid filling whole caves
-        if (out.size() > 24) {
-            out.sort((a, b) -> {
-                double da = a.distanceSquared(sign.getLocation());
-                double db = b.distanceSquared(sign.getLocation());
-                return Double.compare(da, db);
-            });
-            return new ArrayList<>(out.subList(0, 18));
-        }
-        return out;
+        return findOpeningCells(sign, 24);
     }
 
+    public static List<Location> findOpeningCells(Block sign, int maxRadius) {
+        FrameDetector.Scan scan = FrameDetector.scan(sign, maxRadius);
+        if (scan.closed() && !scan.interior().isEmpty()) {
+            int cap = Math.max(24, maxRadius * maxRadius);
+            if (scan.interior().size() <= cap) {
+                return new ArrayList<>(scan.interior());
+            }
+            return new ArrayList<>(scan.interior().subList(0, cap));
+        }
+        return List.of();
+    }
+
+    /** Air below the lintel in the sign plane — never above, never a neighbour's hole. */
     private static List<Location> fallbackOpening(Block sign) {
         List<Location> out = new ArrayList<>();
         BlockFace facing = BlockFace.NORTH;
@@ -281,39 +592,19 @@ public final class PortalMatter {
         } else if (sign.getBlockData() instanceof Directional dir) {
             facing = dir.getFacing();
         }
-        // Opening "inside" opposite to sign face (into the frame)
         BlockFace into = facing.getOppositeFace();
         Block base = sign.getRelative(into);
-        // Axis along the portal width
         boolean xAxis = into == BlockFace.NORTH || into == BlockFace.SOUTH;
-        for (int h = 0; h < 3; h++) {
-            for (int w = -1; w <= 0; w++) {
-                Block cell = base.getRelative(0, h, 0);
+        for (int h = 1; h <= 3; h++) {
+            for (int w = -1; w <= 1; w++) {
+                Block cell;
                 if (xAxis) {
-                    cell = base.getWorld().getBlockAt(base.getX() + w, base.getY() + h, base.getZ());
+                    cell = base.getWorld().getBlockAt(base.getX() + w, base.getY() - h, base.getZ());
                 } else {
-                    cell = base.getWorld().getBlockAt(base.getX(), base.getY() + h, base.getZ() + w);
+                    cell = base.getWorld().getBlockAt(base.getX(), base.getY() - h, base.getZ() + w);
                 }
-                if (cell.getType().isAir() || !cell.getType().isSolid()) {
-                    if (cell.getType().isAir()) {
-                        out.add(cell.getLocation());
-                    }
-                }
-            }
-        }
-        // If still empty, just place 2x3 in front of sign
-        if (out.isEmpty()) {
-            for (int h = 0; h < 3; h++) {
-                for (int w = 0; w < 2; w++) {
-                    Block cell;
-                    if (xAxis) {
-                        cell = sign.getWorld().getBlockAt(sign.getX() + w - 1, sign.getY() + h, sign.getZ() + into.getModZ());
-                    } else {
-                        cell = sign.getWorld().getBlockAt(sign.getX() + into.getModX(), sign.getY() + h, sign.getZ() + w - 1);
-                    }
-                    if (cell.getType().isAir()) {
-                        out.add(cell.getLocation());
-                    }
+                if (FrameDetector.isPassable(cell.getType())) {
+                    out.add(cell.getLocation());
                 }
             }
         }

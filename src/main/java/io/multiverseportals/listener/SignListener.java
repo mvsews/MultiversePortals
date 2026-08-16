@@ -1,5 +1,6 @@
 package io.multiverseportals.listener;
 
+import io.multiverseportals.away.BiomeFrames;
 import io.multiverseportals.MultiversePortalsPlugin;
 import io.multiverseportals.config.PluginConfig;
 import io.multiverseportals.db.RegistryDatabase;
@@ -11,6 +12,7 @@ import io.multiverseportals.util.ShapeHasher;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.minimessage.MiniMessage;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
+import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -58,7 +60,7 @@ public final class SignListener implements Listener {
             return;
         }
         Portal portal = found.get();
-        if (portal.type() != PortalType.MULTI) {
+        if (portal.type() != PortalType.MULTI && portal.type() != PortalType.AWAY) {
             return;
         }
         portals.delete(portal.id());
@@ -74,20 +76,18 @@ public final class SignListener implements Listener {
             return;
         }
         Player player = event.getPlayer();
-        if (!config.everyoneCanCreate() && !player.hasPermission("multiverseportals.create")) {
-            return;
-        }
-        if (!player.hasPermission("multiverseportals.create")) {
-            return;
-        }
-
         String line0 = plain(event.line(0));
-        String line1 = plain(event.line(1)).trim();
-        String line2 = plain(event.line(2)).trim();
         String type = ShapeHasher.parseType(line0);
         if (type == null) {
             return;
         }
+        if (!config.canCreatePortals(player)) {
+            msg(player, config.message(player, "no-permission-create"));
+            return;
+        }
+
+        String line1 = plain(event.line(1)).trim();
+        String line2 = plain(event.line(2)).trim();
 
         Block block = event.getBlock();
         plugin.getServer().getScheduler().runTask(plugin, () -> handle(player, block, type, line1, line2, event));
@@ -99,24 +99,49 @@ public final class SignListener implements Listener {
                 case "multi" -> {
                     // Portal / Random on line 1; optional line 2 = where (IP, Pair, …)
                     String dest = line1 == null ? "" : line1.trim();
-                    String destLower = dest.toLowerCase(java.util.Locale.ROOT)
-                            .replace("[", "").replace("]", "");
-                    if (dest.isBlank() || destLower.equals("random") || destLower.equals("multi")
-                            || destLower.equals("mvp")) {
+                    String destKind = ShapeHasher.parseDestKind(dest);
+                    if ((destKind != null && destKind.isEmpty()) || "away".equals(destKind)) {
+                        if (config.awayEnabled()) {
+                            if (tryCreateAway(player, block)) {
+                                return;
+                            }
+                            if ("away".equals(destKind)) {
+                                tellAwayFrame(player, block);
+                                return;
+                            }
+                        } else if ("away".equals(destKind)) {
+                            typeOff(player, "away");
+                            return;
+                        }
+                        if (typeOff(player, "multi")) {
+                            return;
+                        }
                         Portal portal = portals.createFromSign(player, block, PortalType.MULTI, "multi");
                         msg(player, config.message(player, "created-multi"));
                         msg(player, config.message(player, "bind-searching"));
                         if (plugin.portalBindService() != null) {
                             plugin.portalBindService().startBind(portal, player);
                         }
-                    } else if (destLower.equals("pair") || destLower.equals("link")) {
+                    } else if ("multi".equals(destKind)) {
+                        if (typeOff(player, "multi")) {
+                            return;
+                        }
+                        Portal portal = portals.createFromSign(player, block, PortalType.MULTI, "multi");
+                        msg(player, config.message(player, "created-multi"));
+                        msg(player, config.message(player, "bind-searching"));
+                        if (plugin.portalBindService() != null) {
+                            plugin.portalBindService().startBind(portal, player);
+                        }
+                    } else if ("pair".equals(destKind)) {
                         handlePair(player, block, line2);
-                    } else if (destLower.equals("to") || destLower.equals("goto") || destLower.equals("server")) {
+                    } else if ("to".equals(destKind)) {
+                        if (typeOff(player, "to")) {
+                            return;
+                        }
                         if (line2.isBlank()) {
                             msg(player, config.message(player, "need-to-line"));
                             return;
                         }
-                        // Portal / To / host — rare; treat line2 as host:port blob
                         ToTarget target = parseToTarget(line2, "");
                         if (target == null) {
                             msg(player, config.message(player, "need-to-line"));
@@ -128,6 +153,9 @@ public final class SignListener implements Listener {
                             createRegistryTo(player, block, target.serverId());
                         }
                     } else {
+                        if (typeOff(player, "to")) {
+                            return;
+                        }
                         // Portal + host[:port] on line 2 (port on line 3 optional)
                         ToTarget target = parseToTarget(dest, line2);
                         if (target == null) {
@@ -142,6 +170,9 @@ public final class SignListener implements Listener {
                     }
                 }
                 case "to" -> {
+                    if (typeOff(player, "to")) {
+                        return;
+                    }
                     if (line1.isBlank()) {
                         msg(player, config.message(player, "need-to-line"));
                         return;
@@ -157,7 +188,20 @@ public final class SignListener implements Listener {
                         createRegistryTo(player, block, target.serverId());
                     }
                 }
-                case "pair" -> handlePair(player, block, line1);
+                case "pair" -> {
+                    if (typeOff(player, "pair")) {
+                        return;
+                    }
+                    handlePair(player, block, line1);
+                }
+                case "away" -> {
+                    if (typeOff(player, "away")) {
+                        return;
+                    }
+                    if (!tryCreateAway(player, block)) {
+                        tellAwayFrame(player, block);
+                    }
+                }
                 default -> {
                 }
             }
@@ -165,6 +209,30 @@ public final class SignListener implements Listener {
             plugin.getLogger().warning("Sign portal create failed: " + e.getMessage());
             msg(player, "<red>Не удалось создать портал.</red>");
         }
+    }
+
+    private boolean tryCreateAway(Player player, Block block) {
+        if (!config.awayEnabled()) {
+            return false;
+        }
+        org.bukkit.block.Biome biome = block.getBiome();
+        if (io.multiverseportals.away.BiomeFrames.isNetherOrEnd(
+                io.multiverseportals.away.BiomeFrames.keyOf(biome))) {
+            return false;
+        }
+        if (config.awayRequireBiomeFrame()
+                && !io.multiverseportals.away.BiomeFrames.frameLooksLikeBiome(block, biome)) {
+            return false;
+        }
+        Portal portal = portals.createFromSign(player, block, PortalType.AWAY, "away");
+        portal.setAwayOriginBiome(io.multiverseportals.away.BiomeFrames.keyOf(biome));
+        plugin.database().savePortal(portal);
+        msg(player, config.message(player, "created-away"));
+        msg(player, config.message(player, "away-searching"));
+        if (plugin.biomePortalService() != null) {
+            plugin.biomePortalService().startBind(portal, player);
+        }
+        return true;
     }
 
     private void createFixedHostTo(Player player, Block block, String host, int port) {
@@ -299,6 +367,9 @@ public final class SignListener implements Listener {
     }
 
     private void handlePair(Player player, Block block, String codeLine) {
+        if (typeOff(player, "pair")) {
+            return;
+        }
         String code = codeLine == null ? "" : codeLine.trim();
         if (code.isBlank()) {
             Portal portal = portals.createFromSign(player, block, PortalType.PAIR, "pair");
@@ -344,6 +415,78 @@ public final class SignListener implements Listener {
         msg(player, config.message(player, "paired").replace("%target%", invite.hostServerId()));
         player.sendMessage(mm.deserialize(config.prefix(player)
                 + "<gray>На другом сервере портал с кодом должен стать активным после синка.</gray>"));
+    }
+
+    private boolean typeOff(Player player, String type) {
+        if (config.portalTypeEnabled(type)) {
+            return false;
+        }
+        msg(player, config.message(player, "type-disabled").replace("%type%", type));
+        return true;
+    }
+
+    private void tellAwayFrame(Player player, Block block) {
+        org.bukkit.block.Biome biome = block.getBiome();
+        if (BiomeFrames.isNetherOrEnd(BiomeFrames.keyOf(biome))) {
+            sendHint(player, config.message(player, "away-overworld-only"),
+                    "<red>Away portals only work in the Overworld.</red>");
+            return;
+        }
+        Material want = BiomeFrames.materialFor(biome);
+        Material have = BiomeFrames.majorityFrameMaterial(block);
+        String wantKey = BiomeFrames.blockLangKey(want);
+        String haveKey = BiomeFrames.blockLangKey(have);
+        String biomeKey = BiomeFrames.biomeLangKey(biome);
+        String wantId = idOf(want);
+        String haveId = idOf(have);
+        String mini;
+        String fallback;
+        if (have != null && !BiomeFrames.matches(have, biome)) {
+            mini = fillAway(config.message(player, "away-need-block"), wantKey, haveKey, biomeKey, wantId, haveId);
+            fallback = "<red>Away:</red> <gold><lang:" + wantKey + "></gold> <gray>(" + wantId + ")</gray>"
+                    + " <gray>≠</gray> <yellow><lang:" + haveKey + "></yellow> <gray>(" + haveId + ")</gray>";
+        } else {
+            mini = fillAway(config.message(player, "away-need-block-simple"), wantKey, haveKey, biomeKey, wantId, haveId);
+            fallback = "<red>Away:</red> <gold><lang:" + wantKey + "></gold> <gray>(" + wantId + ")</gray>";
+        }
+        if (mini == null || mini.isBlank() || mini.equals("away-need-block") || mini.equals("away-need-block-simple")) {
+            mini = fallback;
+        }
+        sendHint(player, mini, fallback);
+    }
+
+    private static String fillAway(String template, String wantKey, String haveKey, String biomeKey,
+                                   String wantId, String haveId) {
+        if (template == null) {
+            return "";
+        }
+        return template
+                .replace("%want_key%", wantKey)
+                .replace("%have_key%", haveKey)
+                .replace("%biome_key%", biomeKey)
+                .replace("%want_id%", wantId)
+                .replace("%have_id%", haveId);
+    }
+
+    private static String idOf(Material material) {
+        if (material == null) {
+            return "?";
+        }
+        try {
+            return material.getKey().getKey().replace('_', ' ');
+        } catch (Throwable ignored) {
+            return material.name().toLowerCase(java.util.Locale.ROOT).replace('_', ' ');
+        }
+    }
+
+    private void sendHint(Player player, String mini, String fallback) {
+        try {
+            msg(player, mini);
+            player.sendActionBar(mm.deserialize(mini));
+        } catch (RuntimeException e) {
+            msg(player, fallback);
+            player.sendActionBar(mm.deserialize(fallback));
+        }
     }
 
     private void msg(Player player, String mini) {

@@ -5,6 +5,7 @@ import io.multiverseportals.config.PluginConfig;
 import io.multiverseportals.util.ShapeHasher;
 import net.kyori.adventure.text.minimessage.MiniMessage;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
+import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.Tag;
 import org.bukkit.block.Block;
@@ -24,7 +25,9 @@ import org.bukkit.event.block.SignChangeEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.entity.EntityInteractEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.inventory.EquipmentSlot;
+import io.papermc.paper.event.entity.EntityMoveEvent;
 
 import java.util.Iterator;
 import java.util.Optional;
@@ -51,7 +54,7 @@ public final class LocalPortalListener implements Listener {
         if (!(block.getBlockData() instanceof WallSign)) {
             return;
         }
-        if (!WoolFrame.looksLikeColorPortalSign(block)) {
+        if (!WoolFrame.looksLikeColorPortalSign(block, config.maxFrameRadius())) {
             return;
         }
         // Cross-server signs take precedence
@@ -60,8 +63,8 @@ public final class LocalPortalListener implements Listener {
             return;
         }
         Player player = event.getPlayer();
-        if (!player.hasPermission("multiverseportals.create")
-                && !player.hasPermission("multiverseportals.local.create.*")) {
+        if (!config.canCreatePortals(player)) {
+            player.sendMessage(mm.deserialize(config.prefix(player) + config.message(player, "no-permission-create")));
             return;
         }
         String name = line0.trim();
@@ -70,7 +73,7 @@ public final class LocalPortalListener implements Listener {
         try {
             channel = Integer.parseInt(chan);
         } catch (NumberFormatException e) {
-            if (WoolFrame.frameIsComplete(block)) {
+            if (WoolFrame.frameIsComplete(block, config.maxFrameRadius())) {
                 player.sendMessage(mm.deserialize(config.prefix(player) + config.message(player, "local-bad-channel")));
             }
             return;
@@ -155,12 +158,45 @@ public final class LocalPortalListener implements Listener {
         if (plate == null || !ShapeHasher.isPressurePlate(plate.getType())) {
             return;
         }
-        Block key = plate.getRelative(BlockFace.UP).getRelative(BlockFace.UP);
-        Optional<LocalPortal> portal = local.findByKeyBlock(key);
+        Optional<LocalPortal> portal = local.findByOccupied(plate.getLocation());
         if (portal.isEmpty() || portal.get().linkedPortalId() == null) {
             return;
         }
         local.teleportFrom(portal.get());
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onWalk(PlayerMoveEvent event) {
+        if (!local.enabled() || !config.localWalkOnActivation()) {
+            return;
+        }
+        Location from = event.getFrom();
+        Location to = event.getTo();
+        if (to == null
+                || (from.getBlockX() == to.getBlockX()
+                && from.getBlockY() == to.getBlockY()
+                && from.getBlockZ() == to.getBlockZ())) {
+            return;
+        }
+        local.tryWalkActivate(event.getPlayer(), to);
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onEntityWalk(EntityMoveEvent event) {
+        if (!local.enabled() || !config.localWalkOnActivation()) {
+            return;
+        }
+        if (event.getEntity() instanceof Player) {
+            return;
+        }
+        Location from = event.getFrom();
+        Location to = event.getTo();
+        if (from.getBlockX() == to.getBlockX()
+                && from.getBlockY() == to.getBlockY()
+                && from.getBlockZ() == to.getBlockZ()) {
+            return;
+        }
+        local.tryWalkActivate(event.getEntity(), to);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -172,8 +208,7 @@ public final class LocalPortalListener implements Listener {
         if (!ShapeHasher.isPressurePlate(plate.getType())) {
             return;
         }
-        Block key = plate.getRelative(BlockFace.UP).getRelative(BlockFace.UP);
-        Optional<LocalPortal> portal = local.findByKeyBlock(key);
+        Optional<LocalPortal> portal = local.findByOccupied(plate.getLocation());
         if (portal.isEmpty() || portal.get().linkedPortalId() == null) {
             return;
         }
@@ -205,6 +240,9 @@ public final class LocalPortalListener implements Listener {
         }
         Block key = clicked.getRelative(BlockFace.UP);
         Optional<LocalPortal> portal = local.findByKeyBlock(key);
+        if (portal.isEmpty()) {
+            portal = local.findByOccupied(clicked.getLocation());
+        }
         if (portal.isEmpty() || portal.get().linkedPortalId() == null) {
             return;
         }
@@ -228,6 +266,9 @@ public final class LocalPortalListener implements Listener {
         }
         Block key = button.getRelative(BlockFace.UP);
         Optional<LocalPortal> portal = local.findByKeyBlock(key);
+        if (portal.isEmpty()) {
+            portal = local.findByOccupied(button.getLocation());
+        }
         if (portal.isEmpty() || portal.get().linkedPortalId() == null) {
             return;
         }
@@ -246,8 +287,7 @@ public final class LocalPortalListener implements Listener {
         if (event.getOldCurrent() != 0) {
             return;
         }
-        Block key = b.getRelative(BlockFace.UP).getRelative(BlockFace.UP);
-        Optional<LocalPortal> portal = local.findByKeyBlock(key);
+        Optional<LocalPortal> portal = local.findByOccupied(b.getLocation());
         if (portal.isEmpty() || portal.get().linkedPortalId() == null) {
             return;
         }
@@ -286,13 +326,17 @@ public final class LocalPortalListener implements Listener {
         }
     }
 
+    /** Used by cross-server PortalListener when the purple sheet is a wool portal. */
+    public void tryWalkActivate(org.bukkit.entity.Entity entity, Location loc) {
+        local.tryWalkActivate(entity, loc);
+    }
+
     /** Used by cross-server PortalListener to avoid double-handling. */
     public boolean isLocalPlate(Block plate) {
         if (!local.enabled() || plate == null) {
             return false;
         }
-        Block key = plate.getRelative(BlockFace.UP).getRelative(BlockFace.UP);
-        return local.findByKeyBlock(key).isPresent();
+        return local.findByOccupied(plate.getLocation()).isPresent();
     }
 
     private static String plain(net.kyori.adventure.text.Component c) {

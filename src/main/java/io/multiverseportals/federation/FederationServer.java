@@ -132,6 +132,11 @@ public final class FederationServer {
                 return;
             }
 
+            if ("/reputation".equals(sub) || "/reputation/export".equals(sub)) {
+                handleReputation(ex, method);
+                return;
+            }
+
             if (!"POST".equalsIgnoreCase(method)) {
                 write(ex, 405, err("method"));
                 return;
@@ -270,6 +275,75 @@ public final class FederationServer {
             svg = NetworkBadgeSvg.networkStrip(players, servers);
         }
         writeSvg(ex, 200, svg, method);
+    }
+
+    /**
+     * Directed peer reputation the hub collected from leaf announces.
+     * GET /mvp/v1/reputation?from=A&amp;about=B&amp;host=1.2.3.4&amp;port=25565
+     */
+    private void handleReputation(HttpExchange ex, String method) throws IOException {
+        if (!"GET".equalsIgnoreCase(method) && !"HEAD".equalsIgnoreCase(method)
+                && !"POST".equalsIgnoreCase(method)) {
+            write(ex, 405, err("method"));
+            return;
+        }
+        if (!config.catalogSharePublicRead() && !config.catalogShareHub()) {
+            write(ex, 403, err("reputation unavailable"));
+            return;
+        }
+        String q = ex.getRequestURI().getQuery();
+        String from = queryParam(q, "from");
+        String about = queryParam(q, "about");
+        String host = queryParam(q, "host");
+        int port = 0;
+        try {
+            String p = queryParam(q, "port");
+            if (p != null && !p.isBlank()) {
+                port = Integer.parseInt(p.trim());
+            }
+        } catch (NumberFormatException ignored) {
+        }
+        int limit = 200;
+        try {
+            String l = queryParam(q, "limit");
+            if (l != null && !l.isBlank()) {
+                limit = Integer.parseInt(l.trim());
+            }
+        } catch (NumberFormatException ignored) {
+        }
+        JsonObject out;
+        var registry = plugin.registry();
+        if (registry != null && registry.ready()) {
+            out = registry.exportPeerReputation(from, about, host, port, limit);
+        } else {
+            out = new JsonObject();
+            out.addProperty("ok", true);
+            out.addProperty("from", config.serverId());
+            JsonArray local = db.peerReputationJson(limit);
+            out.add("edges", local);
+            out.addProperty("count", local.size());
+            JsonArray events = db.hopEventsJson(limit);
+            out.add("events", events);
+            out.addProperty("eventCount", events.size());
+        }
+        write(ex, 200, out);
+    }
+
+    private static String queryParam(String query, String key) {
+        if (query == null || query.isBlank() || key == null) {
+            return null;
+        }
+        for (String part : query.split("&")) {
+            int eq = part.indexOf('=');
+            if (eq <= 0) {
+                continue;
+            }
+            String k = java.net.URLDecoder.decode(part.substring(0, eq), java.nio.charset.StandardCharsets.UTF_8);
+            if (key.equalsIgnoreCase(k)) {
+                return java.net.URLDecoder.decode(part.substring(eq + 1), java.nio.charset.StandardCharsets.UTF_8);
+            }
+        }
+        return null;
     }
 
     private static int networkPlayers(JsonObject catalog) {
@@ -878,6 +952,7 @@ public final class FederationServer {
     private void write(HttpExchange ex, int code, JsonObject body) throws IOException {
         byte[] data = gson.toJson(body).getBytes(StandardCharsets.UTF_8);
         ex.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
+        ex.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
         ex.sendResponseHeaders(code, data.length);
         try (OutputStream os = ex.getResponseBody()) {
             os.write(data);

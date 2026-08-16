@@ -54,9 +54,9 @@ public final class ServerProbe {
     }
 
     /** Full SLP payload for catalog branding (MOTD + favicon). */
-    public record StatusInfo(Status status, int online, int max, String motd, byte[] faviconPng) {
+    public record StatusInfo(Status status, int online, int max, String motd, byte[] faviconPng, String versionName) {
         public static StatusInfo unreachable() {
-            return new StatusInfo(Status.UNREACHABLE, -1, -1, "", null);
+            return new StatusInfo(Status.UNREACHABLE, -1, -1, "", null, "");
         }
 
         public boolean hasFavicon() {
@@ -270,6 +270,13 @@ public final class ServerProbe {
                 }
             }
             String motd = descriptionToPlain(root.get("description"));
+            String versionName = "";
+            if (root.has("version") && root.get("version").isJsonObject()) {
+                JsonObject ver = root.getAsJsonObject("version");
+                if (ver.has("name") && !ver.get("name").isJsonNull()) {
+                    versionName = ver.get("name").getAsString();
+                }
+            }
             byte[] favicon = null;
             if (root.has("favicon") && !root.get("favicon").isJsonNull()) {
                 String fav = root.get("favicon").getAsString();
@@ -289,9 +296,9 @@ public final class ServerProbe {
                 }
             }
             Status st = (max > 0 && online >= max) ? Status.FULL : Status.OK;
-            return new StatusInfo(st, online, max, motd, favicon);
+            return new StatusInfo(st, online, max, motd, favicon, versionName);
         } catch (Exception e) {
-            return new StatusInfo(Status.OK, -1, -1, "", null);
+            return new StatusInfo(Status.OK, -1, -1, "", null, "");
         }
     }
 

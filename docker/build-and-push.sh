@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-VERSION="${1:-1.1.16}"
+VERSION="${1:-1.2.17}"
 JAR="build/libs/MultiversePortals-${VERSION}.jar"
 if [[ ! -f "$JAR" ]]; then
   echo "Missing $JAR — run gradle jar first" >&2

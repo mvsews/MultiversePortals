@@ -79,7 +79,7 @@ public final class PortalCommentSigns {
         return out;
     }
 
-    /** True for MVP control signs ([Multi]/Portal / Scan…), not free-form comments. */
+    /** True for MVP control signs ([Multi]/Portal / Finding a world…), not free-form comments. */
     public static boolean isSystemPortalSign(Sign sign) {
         String line0 = ShapeHasher.plain(sign, 0).trim();
         if (ShapeHasher.parseType(line0) != null) {

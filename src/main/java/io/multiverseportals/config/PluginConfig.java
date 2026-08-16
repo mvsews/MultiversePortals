@@ -450,7 +450,103 @@ public final class PluginConfig {
     }
 
     public boolean everyoneCanCreate() {
-        return plugin.getConfig().getBoolean("open-network.everyone-can-create", true);
+        return !portalCreateRequiresAdmin();
+    }
+
+    /**
+     * {@code portals.create}: {@code everyone} (default) or {@code admin}.
+     * Legacy fallback: {@code open-network.everyone-can-create}.
+     */
+    public boolean portalCreateRequiresAdmin() {
+        String v = plugin.getConfig().getString("portals.create", "");
+        if (v != null && !v.isBlank()) {
+            String s = v.trim().toLowerCase(java.util.Locale.ROOT);
+            if (s.equals("admin") || s.equals("op") || s.equals("ops") || s.equals("admins")) {
+                return true;
+            }
+            if (s.equals("everyone") || s.equals("all") || s.equals("players") || s.equals("player")
+                    || s.equals("true") || s.equals("yes")) {
+                return false;
+            }
+        }
+        return !plugin.getConfig().getBoolean("open-network.everyone-can-create", true);
+    }
+
+    public String portalCreateWho() {
+        return portalCreateRequiresAdmin() ? "admin" : "everyone";
+    }
+
+    public void setPortalCreateWho(String who) {
+        boolean admin = portalCreateRequiresAdmin();
+        if (who != null && !who.isBlank()) {
+            String s = who.trim().toLowerCase(java.util.Locale.ROOT);
+            admin = s.equals("admin") || s.equals("op") || s.equals("ops") || s.equals("admins");
+        }
+        plugin.getConfig().set("portals.create", admin ? "admin" : "everyone");
+        plugin.saveConfig();
+        reload();
+    }
+
+    public boolean canCreatePortals(org.bukkit.entity.Player player) {
+        if (player == null) {
+            return false;
+        }
+        if (portalCreateRequiresAdmin()) {
+            return player.hasPermission("multiverseportals.admin") || player.isOp();
+        }
+        return true;
+    }
+
+    public static final String[] PORTAL_TYPE_KEYS = {"away", "wool", "multi", "pair", "to"};
+
+    public boolean portalTypeEnabled(String type) {
+        if (type == null || type.isBlank()) {
+            return true;
+        }
+        String key = type.trim().toLowerCase(java.util.Locale.ROOT);
+        String path = "portals.types." + key;
+        if (plugin.getConfig().isSet(path)) {
+            return plugin.getConfig().getBoolean(path, true);
+        }
+        if ("away".equals(key)) {
+            return plugin.getConfig().getBoolean("away.enabled", true);
+        }
+        if ("wool".equals(key)) {
+            return plugin.getConfig().getBoolean("local-portals.enabled", true);
+        }
+        return true;
+    }
+
+    public void setPortalTypeEnabled(String type, boolean on) {
+        if (type == null || type.isBlank()) {
+            return;
+        }
+        plugin.getConfig().set("portals.types." + type.trim().toLowerCase(java.util.Locale.ROOT), on);
+        plugin.saveConfig();
+        reload();
+    }
+
+    public String portalKindKey(io.multiverseportals.model.Portal portal) {
+        if (portal == null) {
+            return "multi";
+        }
+        return switch (portal.type()) {
+            case AWAY -> "away";
+            case PAIR -> "pair";
+            case MULTI -> isToPortal(portal) ? "to" : "multi";
+        };
+    }
+
+    public boolean portalKindEnabled(io.multiverseportals.model.Portal portal) {
+        return portalTypeEnabled(portalKindKey(portal));
+    }
+
+    private static boolean isToPortal(io.multiverseportals.model.Portal portal) {
+        String n = portal.name();
+        if (n != null && n.toLowerCase(java.util.Locale.ROOT).startsWith("to:")) {
+            return true;
+        }
+        return io.multiverseportals.portal.PortalBindService.fixedEndpoint(portal).isPresent();
     }
 
     public boolean requireTrust() {
@@ -556,7 +652,7 @@ public final class PluginConfig {
         return message("effects-subtitle");
     }
 
-    /** Fill portal opening with nether/end-like matter (BlockDisplay). */
+    /** Fill portal opening: nether uses real animated portal blocks; end/gateway use BlockDisplay. */
     public boolean matterEnabled() {
         return plugin.getConfig().getBoolean("effects.matter.enabled", true);
     }
@@ -849,7 +945,7 @@ public final class PluginConfig {
     // --- local ColorPortals-style portals ---
 
     public boolean localPortalsEnabled() {
-        return plugin.getConfig().getBoolean("local-portals.enabled", true);
+        return portalTypeEnabled("wool");
     }
 
     public boolean localWalkOnActivation() {
@@ -986,6 +1082,75 @@ public final class PluginConfig {
 
     public boolean scannerHubPreferOverPublic() {
         return plugin.getConfig().getBoolean("scanner.hub-pool.prefer-hub-over-public", true);
+    }
+
+    public boolean awayMobs() {
+        return plugin.getConfig().getBoolean("away.mobs", true);
+    }
+
+    /** Chebyshev radius from the control sign for a closed portal opening. */
+    public int maxFrameRadius() {
+        return Math.max(4, Math.min(48, plugin.getConfig().getInt("portals.max-frame-radius", 24)));
+    }
+
+    /**
+     * Days a sticky Random dest may stay unreachable before a new bind. 0 disables (default).
+     */
+    public int offlineRebindDays() {
+        return Math.max(0, plugin.getConfig().getInt("scanner.offline-rebind-days", 0));
+    }
+
+    public long offlineRebindMs() {
+        int days = offlineRebindDays();
+        if (days <= 0) {
+            return 0L;
+        }
+        return days * 24L * 60L * 60L * 1000L;
+    }
+
+    public boolean awayEnabled() {
+        return portalTypeEnabled("away");
+    }
+
+    public boolean awayRequireBiomeFrame() {
+        return plugin.getConfig().getBoolean("away.require-biome-frame", true);
+    }
+
+    public boolean awayAutoBuildReturn() {
+        return plugin.getConfig().getBoolean("away.auto-build-return", true);
+    }
+
+    public int awayLocateRadius() {
+        return Math.max(256, plugin.getConfig().getInt("away.locate-radius", 6400));
+    }
+
+    public int awayMinDistance() {
+        return Math.max(0, plugin.getConfig().getInt("away.min-distance", 256));
+    }
+
+    public boolean awayPreferCenter() {
+        return plugin.getConfig().getBoolean("away.prefer-center", true);
+    }
+
+    public int awayCenterMaxRadius() {
+        return Math.max(64, plugin.getConfig().getInt("away.center-max-radius", 2048));
+    }
+
+    public int awayCenterStep() {
+        return Math.max(8, plugin.getConfig().getInt("away.center-step", 32));
+    }
+
+    public boolean bindPreferVanilla() {
+        return plugin.getConfig().getBoolean("scanner.prefer-vanilla", true);
+    }
+
+    /** Added to flow score as {@code weight * vanillaScore/100}. */
+    public double vanillaScoreWeight() {
+        return Math.max(0.0, plugin.getConfig().getDouble("scanner.vanilla-score-weight", 40.0));
+    }
+
+    public int guestHomeSeconds() {
+        return Math.max(0, plugin.getConfig().getInt("travel.guest-home-seconds", 3600));
     }
 
     public int scannerHubMinCandidates() {

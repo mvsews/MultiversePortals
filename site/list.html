@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en" data-title-key="listDocTitle" data-desc-key="listDocDesc">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Server list — Multiverse Portals</title>
+  <meta name="description" content="Public portal servers: reputation, hops received and sent. Search by name or IP.">
+  <link rel="icon" type="image/png" href="/fav/favicon-96x96.png?v=20260728c" sizes="96x96">
+  <link rel="icon" type="image/svg+xml" href="/fav/favicon.svg?v=20260728c">
+  <link rel="shortcut icon" href="/fav/favicon.ico?v=20260728c">
+  <link rel="apple-touch-icon" sizes="180x180" href="/fav/apple-touch-icon.png?v=20260728c">
+  <link rel="manifest" href="/manifest.json?v=20260728c">
+  <meta name="theme-color" content="#0b1220">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Manrope:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css?v=20260816f">
+</head>
+<body class="list-page">
+  <header class="list-top">
+    <nav class="lang-bar" aria-label="Language">
+      <div class="lang-switch" role="group" data-i18n-aria="langLabel">
+        <button type="button" data-lang="en" aria-pressed="false">EN</button>
+        <button type="button" data-lang="ru" aria-pressed="false">RU</button>
+        <button type="button" data-lang="zh" aria-pressed="false">中文</button>
+      </div>
+    </nav>
+    <p class="list-brand"><a href="/">Multiverse Portals</a></p>
+    <h1 data-i18n="listHeading">Servers</h1>
+    <p class="lede" data-i18n="listLead">Current reputation, how many hops a world accepted, and how many it sent. Search by name or address — case does not matter.</p>
+  </header>
+  <main class="list-main">
+    <div class="list-toolbar">
+      <a class="inline-link" href="/#map" data-i18n="listBack">← Map</a>
+      <input type="search" class="list-search" id="list-search" data-i18n-placeholder="listSearch" placeholder="Find by name or IP" autocomplete="off" spellcheck="false">
+      <p class="list-count" id="list-count"></p>
+    </div>
+    <div class="rep-table-wrap">
+      <table class="rep-table" id="rep-table">
+        <thead>
+          <tr>
+            <th data-sort="name" data-i18n="listColName">Server</th>
+            <th data-sort="addr" data-i18n="listColAddr">Address</th>
+            <th data-sort="reputation" data-i18n="listColRep">Reputation</th>
+            <th data-sort="received" data-i18n="listColIn">Received</th>
+            <th data-sort="sent" data-i18n="listColOut">Sent</th>
+          </tr>
+        </thead>
+        <tbody id="rep-body"></tbody>
+      </table>
+    </div>
+    <p class="list-empty" id="list-empty" hidden></p>
+  </main>
+  <script src="/i18n.js?v=20260816f"></script>
+  <script src="/list.js?v=20260816a"></script>
+</body>
+</html>

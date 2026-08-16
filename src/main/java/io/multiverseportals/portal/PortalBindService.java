@@ -12,6 +12,7 @@ import io.multiverseportals.model.TrustedPeer;
 import io.multiverseportals.scanner.FlowBalance;
 import io.multiverseportals.scanner.ScannedServer;
 import io.multiverseportals.scanner.ServerProbe;
+import io.multiverseportals.scanner.VanillaHeuristic;
 import net.kyori.adventure.text.minimessage.MiniMessage;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
@@ -56,6 +57,8 @@ public final class PortalBindService {
     private static final long DIAL_COOLDOWN_MS = 3_000L;
     /** Hosts recently chosen by dial / Multi bind — skipped for {@code dial-recent-exclude-seconds}. */
     private final Map<String, Long> recentBindUntil = new ConcurrentHashMap<>();
+    /** Bumped on each startBind/cancel so a slow search cannot paint a newer portal. */
+    private final Map<String, Integer> bindEpoch = new ConcurrentHashMap<>();
 
     public PortalBindService(MultiversePortalsPlugin plugin, Database db, PluginConfig config) {
         this.plugin = plugin;
@@ -133,12 +136,19 @@ public final class PortalBindService {
             }
 
             boolean geyser = preferDual && geyserKeys.contains(keyHost(peer.publicHost(), peer.publicPort()));
+            boolean vanilla = !peer.hasPlugin() && VanillaHeuristic.looksVanilla(
+                    peer.software(), peer.version(), peer.displayName());
             String tier = peer.hasPlugin()
                     ? (geyser ? "club-geyser" : "club")
-                    : (geyser ? "ext-geyser" : "ext");
+                    : (vanilla
+                    ? (geyser ? "vanilla-geyser" : "vanilla")
+                    : (geyser ? "ext-geyser" : "ext"));
             int destOnline = onlineMap.getOrDefault(
                     keyHost(peer.publicHost(), peer.publicPort()), -1);
             double flowScore = FlowBalance.score(originOnline, destOnline, flowW);
+            int vanillaScore = VanillaHeuristic.score(peer.software(), peer.version(), peer.displayName());
+            double hopScore = db.hopRankScore(peer.serverId(), peer.publicHost(), peer.publicPort());
+            double combined = flowScore + vanillaBindBonus(vanillaScore) + hopScore;
 
             JsonObject o = new JsonObject();
             o.addProperty("rank", rank);
@@ -148,8 +158,11 @@ public final class PortalBindService {
             o.addProperty("label", peer.displayName() == null ? "" : peer.displayName());
             o.addProperty("hasPlugin", peer.hasPlugin());
             o.addProperty("tier", tier);
+            o.addProperty("vanillaScore", vanillaScore);
             o.addProperty("online", destOnline);
             o.addProperty("flowScore", Math.round(flowScore * 10.0) / 10.0);
+            o.addProperty("hopScore", Math.round(hopScore * 10.0) / 10.0);
+            o.addProperty("combinedScore", Math.round(combined * 10.0) / 10.0);
             o.addProperty("wouldProbe", wouldProbe);
             if (skip != null) {
                 o.addProperty("skip", skip);
@@ -172,8 +185,10 @@ public final class PortalBindService {
         out.addProperty("flowBalance", flowW.enabled());
         out.addProperty("originOnline", originOnline);
         out.addProperty("portalId", seed.id());
+        out.addProperty("preferVanilla", config.bindPreferVanilla());
         out.addProperty("note", "Order matches [Multi] bind; wouldProbe marks the first maxAttempts "
                 + "candidates that are not skipped. online/flowScore use probe_cache (not live SLP). "
+                + "Ordinary survival worlds (Paper OK) are tried before Fabric/Forge and minigames. "
                 + "Toggle scanner.flow-balance.enabled and /mvp reload to compare rankings.");
         out.add("candidates", arr);
         return out;
@@ -232,6 +247,7 @@ public final class PortalBindService {
             player.sendMessage(mm.deserialize(config.prefix(player) + config.message(player, "dial-busy")));
             return;
         }
+        int epoch = bindEpoch.merge(portal.id(), 1, Integer::sum);
         portal.clearBound();
         portal.setStatus(PortalStatus.BINDING);
         db.savePortal(portal);
@@ -313,9 +329,13 @@ public final class PortalBindService {
                 plugin.getLogger().warning("Dial bind failed for " + portalId + ": " + t.getMessage());
             }
             BoundDest finalDest = dest;
+            final int epochAtStart = epoch;
             Bukkit.getScheduler().runTask(plugin, () -> {
+                if (bindEpoch.getOrDefault(portalId, 0) != epochAtStart) {
+                    return;
+                }
                 // On success use dial-switched (not bind-ready); on failure still notify via finishBind.
-                finishBind(portalId, finalDest, finalDest == null ? playerId : null);
+                finishBind(portalId, finalDest, finalDest == null ? playerId : null, epochAtStart);
                 Player p = Bukkit.getPlayer(playerId);
                 if (p != null && p.isOnline() && finalDest != null) {
                     p.sendMessage(mm.deserialize(config.prefix(p) + config.message(p, "dial-switched")
@@ -333,6 +353,7 @@ public final class PortalBindService {
         if (!binding.add(portal.id())) {
             return;
         }
+        int epoch = bindEpoch.merge(portal.id(), 1, Integer::sum);
         portal.clearBound();
         portal.setStatus(PortalStatus.BINDING);
         db.savePortal(portal);
@@ -358,6 +379,7 @@ public final class PortalBindService {
         final Set<String> exclude = excludeHosts == null || excludeHosts.isEmpty()
                 ? Set.of()
                 : Set.copyOf(excludeHosts);
+        final int epochAtStart = epoch;
 
         Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
             BoundDest dest = null;
@@ -379,7 +401,7 @@ public final class PortalBindService {
                 plugin.getLogger().warning("Bind search failed for " + portalId + ": " + t.getMessage());
             }
             BoundDest finalDest = dest;
-            Bukkit.getScheduler().runTask(plugin, () -> finishBind(portalId, finalDest, creatorId));
+            Bukkit.getScheduler().runTask(plugin, () -> finishBind(portalId, finalDest, creatorId, epochAtStart));
         });
     }
 
@@ -468,7 +490,56 @@ public final class PortalBindService {
 
     public void cancel(String portalId) {
         binding.remove(portalId);
+        bindEpoch.merge(portalId, 1, Integer::sum);
         stopWhiteFx(portalId);
+    }
+
+    /**
+     * Optional: if a sticky Random dest has been unreachable longer than
+     * {@code scanner.offline-rebind-days}, search a more active host. 0 = disabled.
+     */
+    public void tickOfflineRebind() {
+        long window = config.offlineRebindMs();
+        if (window <= 0) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        int timeout = config.scannerProbeTimeoutMs();
+        for (Portal p : db.listPortals()) {
+            if (p.type() != PortalType.MULTI || !p.hasBoundDestination()) {
+                continue;
+            }
+            if (fixedEndpoint(p).isPresent()) {
+                continue;
+            }
+            if (p.status() == PortalStatus.BINDING) {
+                continue;
+            }
+            if (p.boundLastOkAt() <= 0) {
+                p.setBoundLastOkAt(now);
+                db.savePortal(p);
+                continue;
+            }
+            int javaPort = p.boundJavaPort() > 0 ? p.boundJavaPort() : p.boundPort();
+            ServerProbe.Result r = ServerProbe.probe(p.boundHost(), javaPort, timeout);
+            if (r.joinable()) {
+                p.setBoundLastOkAt(now);
+                db.savePortal(p);
+                continue;
+            }
+            if (now - p.boundLastOkAt() < window) {
+                continue;
+            }
+            plugin.getLogger().info("Offline rebind: " + p.id() + " dest " + p.boundHost()
+                    + " unreachable > " + config.offlineRebindDays() + "d");
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                Portal live = db.findPortal(p.id()).orElse(null);
+                if (live == null) {
+                    return;
+                }
+                startBind(live, Bukkit.getPlayer(live.creator()));
+            });
+        }
     }
 
     /**
@@ -481,6 +552,7 @@ public final class PortalBindService {
         if (!binding.add(portal.id())) {
             return;
         }
+        int epoch = bindEpoch.merge(portal.id(), 1, Integer::sum);
         portal.clearBound();
         portal.setStatus(PortalStatus.BINDING);
         db.savePortal(portal);
@@ -498,6 +570,7 @@ public final class PortalBindService {
         final String portalId = portal.id();
         final String hostF = host.trim();
         final int javaF = javaPort;
+        final int epochAtStart = epoch;
 
         Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
             BoundDest dest = null;
@@ -507,7 +580,7 @@ public final class PortalBindService {
                 plugin.getLogger().warning("Fixed bind failed for " + portalId + ": " + t.getMessage());
             }
             BoundDest finalDest = dest;
-            Bukkit.getScheduler().runTask(plugin, () -> finishBind(portalId, finalDest, creatorId));
+            Bukkit.getScheduler().runTask(plugin, () -> finishBind(portalId, finalDest, creatorId, epochAtStart));
         });
     }
 
@@ -641,7 +714,10 @@ public final class PortalBindService {
         return t.length() <= max ? t : t.substring(0, max);
     }
 
-    private void finishBind(String portalId, BoundDest dest, UUID notify) {
+    private void finishBind(String portalId, BoundDest dest, UUID notify, int epoch) {
+        if (bindEpoch.getOrDefault(portalId, 0) != epoch) {
+            return;
+        }
         binding.remove(portalId);
         Optional<Portal> live = db.findPortal(portalId);
         if (live.isEmpty()) {
@@ -658,7 +734,7 @@ public final class PortalBindService {
             portal.clearBound();
             db.savePortal(portal);
             PortalSigns.update(portal);
-            // Keep white FX running (BIND_FAILED still shows Scan...)
+            // Keep white FX running (BIND_FAILED still shows Finding a world...)
             Bukkit.getScheduler().runTaskLater(plugin, () -> db.findPortal(portalId).ifPresent(p -> {
                 if (p.status() == PortalStatus.BIND_FAILED) {
                     retryBind(p);
@@ -678,15 +754,16 @@ public final class PortalBindService {
         portal.setBoundJavaPort(dest.javaPort());
         portal.setBoundPort(dest.transferPort() > 0 ? dest.transferPort() : dest.javaPort());
         portal.setBoundVersion(dest.label());
+        portal.setBoundLastOkAt(System.currentTimeMillis());
         portal.setStatus(PortalStatus.ACTIVE);
         db.savePortal(portal);
         if (plugin.portalMatter() != null) {
             plugin.portalMatter().refresh(portal);
         }
-        PortalSigns.update(portal);
         if (plugin.portalService() != null) {
             plugin.portalService().publishPortalGraphAsync();
         }
+        PortalSigns.updateSticky(portal);
         if (config.scannerMemoryEnabled()) {
             db.recordProbe(dest.host(), dest.javaPort(), Database.ProbeStatus.OK,
                     null, null,
@@ -851,19 +928,19 @@ public final class PortalBindService {
                 // BAD_JOIN for public hosts is soft-ranked by score (later), not hard-skipped.
                 tried++;
                 totalTried++;
-                ServerProbe.Result r = ServerProbe.probe(peer.publicHost(), peer.publicPort(), timeout);
-                if (r.status() != ServerProbe.Status.OK) {
+                ServerProbe.StatusInfo info = ServerProbe.probeStatus(peer.publicHost(), peer.publicPort(), timeout);
+                if (info.status() != ServerProbe.Status.OK) {
                     dead++;
                     if (config.scannerMemoryEnabled()) {
                         db.recordProbe(peer.publicHost(), peer.publicPort(),
-                                r.status() == ServerProbe.Status.FULL
+                                info.status() == ServerProbe.Status.FULL
                                         ? Database.ProbeStatus.FULL : Database.ProbeStatus.DEAD,
-                                r.online() >= 0 ? r.online() : null,
-                                r.max() >= 0 ? r.max() : null,
+                                info.online() >= 0 ? info.online() : null,
+                                info.max() >= 0 ? info.max() : null,
                                 null, null, null, null);
                     }
                     reportHub(peer.publicHost(), peer.publicPort(),
-                            r.status() == ServerProbe.Status.FULL
+                            info.status() == ServerProbe.Status.FULL
                                     ? Database.ProbeStatus.FULL : Database.ProbeStatus.DEAD,
                             null, null, null, null, peer.displayName());
                     continue;
@@ -873,15 +950,15 @@ public final class PortalBindService {
                 String label = peer.displayName() != null && !peer.displayName().isBlank()
                         ? peer.displayName()
                         : peer.publicHost();
-                if (looksClosedMotd(label)) {
+                if (looksClosedMotd(label) || looksClosedMotd(info.motd())) {
                     plugin.getLogger().info("Skip " + peer.publicHost() + " — MOTD looks closed: " + label);
                     continue;
                 }
 
-                if (!peer.hasPlugin() && FlowBalance.rejectMega(r.online(), flowW)) {
+                if (!peer.hasPlugin() && FlowBalance.rejectMega(info.online(), flowW)) {
                     megaSkipped++;
                     plugin.getLogger().info("Skip " + peer.publicHost()
-                            + " — mega hard-cap online=" + r.online());
+                            + " — mega hard-cap online=" + info.online());
                     continue;
                 }
 
@@ -920,7 +997,7 @@ public final class PortalBindService {
                             if (config.scannerMemoryEnabled()) {
                                 db.recordProbe(peer.publicHost(), peer.publicPort(),
                                         Database.ProbeStatus.NO_GEYSER,
-                                        r.online(), r.max(), null, null, null, null);
+                                        info.online(), info.max(), null, null, null, null);
                             }
                             reportHub(peer.publicHost(), peer.publicPort(), Database.ProbeStatus.NO_GEYSER,
                                     null, null, null, null, peer.displayName());
@@ -944,7 +1021,7 @@ public final class PortalBindService {
                         if (config.scannerMemoryEnabled()) {
                             db.recordProbe(peer.publicHost(), peer.publicPort(),
                                     Database.ProbeStatus.NO_GEYSER,
-                                    r.online(), r.max(), null, null, null, null);
+                                    info.online(), info.max(), null, null, null, null);
                         }
                         reportHub(peer.publicHost(), peer.publicPort(), Database.ProbeStatus.NO_GEYSER,
                                 null, null, null, null, peer.displayName());
@@ -964,18 +1041,29 @@ public final class PortalBindService {
                     }
                 }
 
-                double flowScore = FlowBalance.score(originOnline, r.online(), flowW);
+                int vanillaScore = VanillaHeuristic.score(
+                        peer.software(),
+                        info.versionName() != null && !info.versionName().isBlank()
+                                ? info.versionName() : peer.version(),
+                        (info.motd() == null ? "" : info.motd()) + " " + label);
+                double flowScore = FlowBalance.score(originOnline, info.online(), flowW);
+                double hopScore = db.hopRankScore(peer.serverId(), peer.publicHost(), peer.publicPort());
+                double combined = flowScore + vanillaBindBonus(vanillaScore) + hopScore;
                 plugin.getLogger().info("Bind candidate OK " + peer.publicHost() + ":" + transferPort
                         + " label=" + label
                         + " club=" + peer.hasPlugin()
-                        + " online=" + r.online() + "/" + r.max()
+                        + " vanilla=" + vanillaScore
+                        + " brand=" + (info.versionName() == null ? "" : info.versionName())
+                        + " online=" + info.online() + "/" + info.max()
                         + " flow=" + String.format(Locale.ROOT, "%.1f", flowScore)
+                        + " hop=" + String.format(Locale.ROOT, "%.1f", hopScore)
+                        + " combined=" + String.format(Locale.ROOT, "%.1f", combined)
                         + (bedP > 0 ? " bed=" + bedP + "/" + bedV : ""));
                 Integer bedPortOut = bedP > 0 ? transferPort : null;
                 Integer bedProtoOut = bedP > 0 ? bedP : null;
                 if (config.scannerMemoryEnabled()) {
                     db.recordProbe(peer.publicHost(), peer.publicPort(), Database.ProbeStatus.OK,
-                            r.online(), r.max(), bedPortOut, bedProtoOut, bedV, null);
+                            info.online(), info.max(), bedPortOut, bedProtoOut, bedV, null);
                 }
                 reportHub(peer.publicHost(), peer.publicPort(), Database.ProbeStatus.OK,
                         null, bedPortOut, bedProtoOut, bedV, label);
@@ -1002,7 +1090,7 @@ public final class PortalBindService {
                 if (!flowW.enabled()) {
                     return cand;
                 }
-                passOk.add(new ScoredOk(cand, flowScore));
+                passOk.add(new ScoredOk(cand, combined));
             }
 
             if (!passOk.isEmpty()) {
@@ -1113,8 +1201,11 @@ public final class PortalBindService {
         }
         List<TrustedPeer> clubGeyser = new ArrayList<>();
         List<TrustedPeer> clubOther = new ArrayList<>();
+        List<TrustedPeer> vanillaGeyser = new ArrayList<>();
+        List<TrustedPeer> vanillaOther = new ArrayList<>();
         List<TrustedPeer> extGeyser = new ArrayList<>();
         List<TrustedPeer> extOther = new ArrayList<>();
+        boolean preferVanilla = config.bindPreferVanilla();
         for (TrustedPeer p : peers) {
             boolean geyser = preferDualStack && geyserKeys.contains(keyHost(p.publicHost(), p.publicPort()));
             if (p.hasPlugin()) {
@@ -1122,6 +1213,12 @@ public final class PortalBindService {
                     clubGeyser.add(p);
                 } else {
                     clubOther.add(p);
+                }
+            } else if (preferVanilla && VanillaHeuristic.looksVanilla(p.software(), p.version(), p.displayName())) {
+                if (geyser) {
+                    vanillaGeyser.add(p);
+                } else {
+                    vanillaOther.add(p);
                 }
             } else if (geyser) {
                 extGeyser.add(p);
@@ -1138,14 +1235,31 @@ public final class PortalBindService {
         // Club: sparsest hub mesh first (known_mvp score / registry degree) — then soft shuffle ties.
         sortClubBySparseHubLinks(clubGeyser, rng);
         sortClubBySparseHubLinks(clubOther, rng);
-        // Public scanners: flow-balance / shuffle as before.
+        // Public: vanilla-like before Paper/modded; flow-balance / shuffle within each tier.
+        rankTier(vanillaGeyser, originOnline, onlineMap, flowW, shuffle, rng);
+        rankTier(vanillaOther, originOnline, onlineMap, flowW, shuffle, rng);
         rankTier(extGeyser, originOnline, onlineMap, flowW, shuffle, rng);
         rankTier(extOther, originOnline, onlineMap, flowW, shuffle, rng);
         peers.clear();
         peers.addAll(clubGeyser);
         peers.addAll(clubOther);
-        peers.addAll(extGeyser);
+        peers.addAll(vanillaGeyser);
+        if (preferDualStack) {
+            // Bedrock: Geyser hosts first. Java-only vanilla would burn probe slots.
+            peers.addAll(extGeyser);
+            peers.addAll(vanillaOther);
+        } else {
+            peers.addAll(vanillaOther);
+            peers.addAll(extGeyser);
+        }
         peers.addAll(extOther);
+    }
+
+    private double vanillaBindBonus(int vanillaScore) {
+        if (!config.bindPreferVanilla()) {
+            return 0.0;
+        }
+        return config.vanillaScoreWeight() * (Math.max(0, vanillaScore) / 100.0);
     }
 
     /**

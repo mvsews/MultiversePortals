@@ -4,6 +4,8 @@ import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import io.multiverseportals.compat.ServerCaps;
 import io.multiverseportals.config.PluginConfig;
+import io.multiverseportals.model.HopEvent;
+import io.multiverseportals.model.PeerEdge;
 import io.multiverseportals.model.Portal;
 import io.multiverseportals.model.PortalType;
 import io.multiverseportals.model.RegistryPortal;
@@ -15,6 +17,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -23,6 +26,7 @@ import java.util.Set;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.reflect.TypeToken;
 
@@ -45,9 +49,24 @@ public final class RegistryDatabase {
         return config.registryEnabled();
     }
 
-    public void init() {
+    /** True when JDBC pool exists (enabled in config is not enough right after a boot race). */
+    public boolean ready() {
+        return enabled() && ds != null;
+    }
+
+    private Connection conn() throws SQLException {
+        if (ds == null) {
+            throw new SQLException("registry pool down");
+        }
+        return ds.getConnection();
+    }
+
+    public synchronized void init() {
         if (!enabled()) {
             plugin.getLogger().info("Shared registry disabled (multi pool will use local peers only)");
+            return;
+        }
+        if (ds != null) {
             return;
         }
         HikariConfig hc = new HikariConfig();
@@ -57,13 +76,19 @@ public final class RegistryDatabase {
         hc.setMaximumPoolSize(3);
         hc.setPoolName("MVP-Registry");
         hc.setConnectionTimeout(5000);
-        this.ds = new HikariDataSource(hc);
-        migrate();
+        try {
+            this.ds = new HikariDataSource(hc);
+            migrate();
+        } catch (RuntimeException e) {
+            close();
+            this.ds = null;
+            throw e;
+        }
         plugin.getLogger().info("Shared registry connected");
     }
 
     private void migrate() {
-        try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
+        try (Connection c = conn(); Statement st = c.createStatement()) {
             st.execute("""
                 CREATE TABLE IF NOT EXISTS registry_servers (
                   server_id          VARCHAR(64)  NOT NULL PRIMARY KEY,
@@ -226,6 +251,43 @@ public final class RegistryDatabase {
                   INDEX idx_scan_seen (last_seen_at)
                 )
                 """);
+            st.execute("""
+                CREATE TABLE IF NOT EXISTS registry_peer_reputation (
+                  reporter_id     VARCHAR(64)  NOT NULL,
+                  peer_key        VARCHAR(128) NOT NULL,
+                  peer_server_id  VARCHAR(64)  NULL,
+                  peer_host       VARCHAR(255) NULL,
+                  peer_port       INT          NOT NULL DEFAULT 0,
+                  reputation      INT          NOT NULL DEFAULT 0,
+                  arrived         INT          NOT NULL DEFAULT 0,
+                  departed        INT          NOT NULL DEFAULT 0,
+                  failed          INT          NOT NULL DEFAULT 0,
+                  rejected        INT          NOT NULL DEFAULT 0,
+                  updated_at      BIGINT       NOT NULL,
+                  PRIMARY KEY (reporter_id, peer_key),
+                  INDEX idx_peer_rep_about (peer_server_id, reputation),
+                  INDEX idx_peer_rep_host (peer_host, peer_port)
+                )
+                """);
+            alterIgnore(st, "ALTER TABLE registry_peer_reputation ADD COLUMN rejected INT NOT NULL DEFAULT 0");
+            st.execute("""
+                CREATE TABLE IF NOT EXISTS registry_hop_events (
+                  id            VARCHAR(64)  NOT NULL PRIMARY KEY,
+                  reporter_id   VARCHAR(64)  NOT NULL,
+                  player_uuid   VARCHAR(64)  NULL,
+                  player_name   VARCHAR(32)  NULL,
+                  from_server   VARCHAR(64)  NULL,
+                  to_server     VARCHAR(64)  NULL,
+                  to_host       VARCHAR(255) NULL,
+                  to_port       INT          NOT NULL DEFAULT 0,
+                  outcome       VARCHAR(16)  NOT NULL,
+                  kind          VARCHAR(16)  NULL,
+                  at            BIGINT       NOT NULL,
+                  INDEX idx_hop_at (at),
+                  INDEX idx_hop_from_to (from_server, to_server),
+                  INDEX idx_hop_host (to_host, to_port)
+                )
+                """);
         } catch (SQLException e) {
             throw new IllegalStateException("Registry migrate failed", e);
         }
@@ -273,7 +335,7 @@ public final class RegistryDatabase {
             int viaMax,
             ServerCaps caps
     ) {
-        if (!enabled()) {
+        if (!ready()) {
             return;
         }
         if (caps == null) {
@@ -326,12 +388,12 @@ public final class RegistryDatabase {
               ingress_max_per_hour=VALUES(ingress_max_per_hour),
               export_inventory=VALUES(export_inventory),
               import_inventory=VALUES(import_inventory),
-              mvp_version=VALUES(mvp_version),
+              mvp_version=IF(VALUES(mvp_version) IS NOT NULL AND VALUES(mvp_version)<>'', VALUES(mvp_version), mvp_version),
               last_heartbeat=VALUES(last_heartbeat),
               last_online_at=VALUES(last_online_at),
               last_offline_at=NULL
             """;
-        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(sql)) {
             String fedUrl = "http://" + config.publicHost() + ":" + config.federationPort() + config.federationPath();
             if (config.federationBind().equals("0.0.0.0") || config.federationBind().equals("127.0.0.1")) {
                 fedUrl = config.registryFederationUrlOverride().orElse(fedUrl);
@@ -442,7 +504,7 @@ public final class RegistryDatabase {
             int onlinePlayers,
             int maxPlayers
     ) {
-        if (!enabled() || serverId == null || serverId.isBlank()
+        if (!ready() || serverId == null || serverId.isBlank()
                 || publicHost == null || publicHost.isBlank() || publicPort <= 0) {
             return;
         }
@@ -480,12 +542,12 @@ public final class RegistryDatabase {
               bedrock_protocol=IF(VALUES(bedrock_protocol)>0, VALUES(bedrock_protocol), bedrock_protocol),
               bedrock_version=IF(VALUES(bedrock_version) IS NOT NULL AND VALUES(bedrock_version)<>'', VALUES(bedrock_version), bedrock_version),
               accept_bedrock=VALUES(accept_bedrock),
-              mvp_version=VALUES(mvp_version),
+              mvp_version=IF(VALUES(mvp_version) IS NOT NULL AND VALUES(mvp_version)<>'', VALUES(mvp_version), mvp_version),
               last_heartbeat=VALUES(last_heartbeat),
               last_online_at=VALUES(last_online_at),
               last_offline_at=NULL
             """;
-        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(sql)) {
             int i = 1;
             ps.setString(i++, serverId.trim());
             ps.setString(i++, displayName == null || displayName.isBlank() ? serverId : displayName);
@@ -541,7 +603,7 @@ public final class RegistryDatabase {
      * Display-name or serverId churn must not create duplicate map markers.
      */
     public int retireDuplicateEndpoints(String keepServerId, String publicHost, int publicPort) {
-        if (!enabled() || keepServerId == null || keepServerId.isBlank()
+        if (!ready() || keepServerId == null || keepServerId.isBlank()
                 || publicHost == null || publicHost.isBlank() || publicPort <= 0) {
             return 0;
         }
@@ -552,7 +614,7 @@ public final class RegistryDatabase {
             SELECT server_id FROM registry_servers
             WHERE LOWER(public_host)=LOWER(?) AND public_port=? AND server_id<>?
             """;
-        try (Connection c = ds.getConnection()) {
+        try (Connection c = conn()) {
             try (PreparedStatement ps = c.prepareStatement(select)) {
                 ps.setString(1, host);
                 ps.setInt(2, publicPort);
@@ -598,7 +660,7 @@ public final class RegistryDatabase {
      * @return rows marked offline this pass
      */
     public int markStaleOffline() {
-        if (!enabled()) {
+        if (!ready()) {
             return 0;
         }
         long staleMs = Math.max(1_000L, config.registryStaleMs());
@@ -611,7 +673,7 @@ public final class RegistryDatabase {
               AND last_online_at IS NOT NULL
               AND (last_offline_at IS NULL OR last_offline_at < last_online_at)
             """;
-        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setLong(1, staleMs);
             ps.setLong(2, cutoff);
             return ps.executeUpdate();
@@ -628,7 +690,7 @@ public final class RegistryDatabase {
 
     /** Hub: peer announced graceful shutdown over HTTPS catalog. */
     public void markPeerOffline(String serverId) {
-        if (!enabled() || serverId == null || serverId.isBlank()) {
+        if (!ready() || serverId == null || serverId.isBlank()) {
             return;
         }
         long now = System.currentTimeMillis();
@@ -638,7 +700,7 @@ public final class RegistryDatabase {
             WHERE server_id = ?
               AND (last_offline_at IS NULL OR last_online_at IS NULL OR last_offline_at < last_online_at)
             """;
-        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setLong(1, now);
             ps.setString(2, serverId.trim());
             int n = ps.executeUpdate();
@@ -661,7 +723,7 @@ public final class RegistryDatabase {
             String motd,
             byte[] iconPng
     ) {
-        if (!enabled() || serverId == null || serverId.isBlank()) {
+        if (!ready() || serverId == null || serverId.isBlank()) {
             return;
         }
         String sqlWithIcon = """
@@ -679,7 +741,7 @@ public final class RegistryDatabase {
                 motd = COALESCE(NULLIF(?, ''), motd)
             WHERE server_id = ?
             """;
-        try (Connection c = ds.getConnection()) {
+        try (Connection c = conn()) {
             if (iconPng != null) {
                 try (PreparedStatement ps = c.prepareStatement(sqlWithIcon)) {
                     ps.setString(1, displayName == null ? "" : displayName);
@@ -708,10 +770,10 @@ public final class RegistryDatabase {
     }
 
     public byte[] iconPng(String serverId) {
-        if (!enabled() || serverId == null || serverId.isBlank()) {
+        if (!ready() || serverId == null || serverId.isBlank()) {
             return null;
         }
-        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(
                 "SELECT icon_png FROM registry_servers WHERE server_id=?")) {
             ps.setString(1, serverId.trim());
             try (ResultSet rs = ps.executeQuery()) {
@@ -736,7 +798,7 @@ public final class RegistryDatabase {
     }
 
     public int syncPortals(List<Portal> portals, Map<String, List<String>> commentSigns) {
-        if (!enabled() || !config.registryPublishPortals()) {
+        if (!ready() || !config.registryPublishPortals()) {
             return 0;
         }
         if (commentSigns == null) {
@@ -769,10 +831,10 @@ public final class RegistryDatabase {
               signs_json=VALUES(signs_json),
               updated_at=VALUES(updated_at)
             """;
-        try (Connection c = ds.getConnection()) {
+        try (Connection c = conn()) {
             try (PreparedStatement ps = c.prepareStatement(upsert)) {
                 for (Portal p : portals) {
-                    if (p == null) {
+                    if (p == null || p.type() == PortalType.AWAY) {
                         continue;
                     }
                     keep.add(p.id());
@@ -885,7 +947,7 @@ public final class RegistryDatabase {
      * Only rows for that server id are touched; other servers' portals stay intact.
      */
     public int ingestPeerPortals(String ownerServerId, com.google.gson.JsonArray portals) {
-        if (!enabled() || !config.registryPublishPortals()
+        if (!ready() || !config.registryPublishPortals()
                 || ownerServerId == null || ownerServerId.isBlank()) {
             return 0;
         }
@@ -916,7 +978,7 @@ public final class RegistryDatabase {
               signs_json=VALUES(signs_json),
               updated_at=VALUES(updated_at)
             """;
-        try (Connection c = ds.getConnection()) {
+        try (Connection c = conn()) {
             if (portals != null && portals.size() > 0) {
                 try (PreparedStatement ps = c.prepareStatement(upsert)) {
                     for (com.google.gson.JsonElement el : portals) {
@@ -1046,7 +1108,7 @@ public final class RegistryDatabase {
     }
 
     public Optional<String> resolveServerIdByHost(String host, int javaPort) {
-        if (!enabled() || host == null || host.isBlank()) {
+        if (!ready() || host == null || host.isBlank()) {
             return Optional.empty();
         }
         String sql = """
@@ -1054,7 +1116,7 @@ public final class RegistryDatabase {
             WHERE LOWER(public_host)=LOWER(?) AND (public_port=? OR ?=0)
             ORDER BY last_heartbeat DESC LIMIT 1
             """;
-        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, host.trim());
             ps.setInt(2, javaPort);
             ps.setInt(3, javaPort);
@@ -1067,7 +1129,7 @@ public final class RegistryDatabase {
             return Optional.empty();
         }
         // host-only match
-        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(
                 "SELECT server_id FROM registry_servers WHERE LOWER(public_host)=LOWER(?) ORDER BY last_heartbeat DESC LIMIT 1")) {
             ps.setString(1, host.trim());
             try (ResultSet rs = ps.executeQuery()) {
@@ -1081,7 +1143,7 @@ public final class RegistryDatabase {
     }
 
     public boolean hasPortalEdge(String fromServerId, String toServerId) {
-        if (!enabled() || fromServerId == null || toServerId == null) {
+        if (!ready() || fromServerId == null || toServerId == null) {
             return false;
         }
         String sql = """
@@ -1089,7 +1151,7 @@ public final class RegistryDatabase {
             WHERE server_id=? AND dest_server_id=? AND status='ACTIVE'
             LIMIT 1
             """;
-        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, fromServerId);
             ps.setString(2, toServerId);
             try (ResultSet rs = ps.executeQuery()) {
@@ -1101,7 +1163,7 @@ public final class RegistryDatabase {
     }
 
     public List<RegistryPortal> listPortals(int limit) {
-        if (!enabled()) {
+        if (!ready()) {
             return List.of();
         }
         List<RegistryPortal> out = new ArrayList<>();
@@ -1110,7 +1172,7 @@ public final class RegistryDatabase {
             ORDER BY server_id, world, x, z
             LIMIT ?
             """;
-        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setInt(1, Math.max(1, limit));
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
@@ -1124,11 +1186,11 @@ public final class RegistryDatabase {
     }
 
     public List<RegistryPortal> listPortalsOnServer(String serverId) {
-        if (!enabled() || serverId == null) {
+        if (!ready() || serverId == null) {
             return List.of();
         }
         List<RegistryPortal> out = new ArrayList<>();
-        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(
                 "SELECT * FROM registry_portals WHERE server_id=? ORDER BY world, x, z")) {
             ps.setString(1, serverId);
             try (ResultSet rs = ps.executeQuery()) {
@@ -1144,7 +1206,7 @@ public final class RegistryDatabase {
 
     /** Edges that can send a player TO this server (return paths / inbound). */
     public List<RegistryPortal> listInboundTo(String serverId) {
-        if (!enabled() || serverId == null) {
+        if (!ready() || serverId == null) {
             return List.of();
         }
         List<RegistryPortal> out = new ArrayList<>();
@@ -1153,7 +1215,7 @@ public final class RegistryDatabase {
             WHERE dest_server_id=? AND status='ACTIVE'
             ORDER BY server_id, updated_at DESC
             """;
-        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, serverId);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
@@ -1231,11 +1293,11 @@ public final class RegistryDatabase {
     }
 
     public void setMultiOptIn(boolean optIn) {
-        if (!enabled()) {
+        if (!ready()) {
             return;
         }
         long now = System.currentTimeMillis();
-        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(
                 "UPDATE registry_servers SET multi_opt_in=?, last_heartbeat=?, last_online_at=? WHERE server_id=?")) {
             ps.setInt(1, optIn ? 1 : 0);
             ps.setLong(2, now);
@@ -1249,7 +1311,7 @@ public final class RegistryDatabase {
 
     /** Alive multi-capable servers excluding self — sparsest hub mesh first (fewest portal links). */
     public List<RegistryServer> listMultiTargets(long maxAgeMs) {
-        if (!enabled()) {
+        if (!ready()) {
             return List.of();
         }
         long minHb = System.currentTimeMillis() - maxAgeMs;
@@ -1298,7 +1360,7 @@ public final class RegistryDatabase {
             ORDER BY COALESCE(d.degree, 0) ASC, s.last_heartbeat DESC
             """;
         List<RegistryServer> list = new ArrayList<>();
-        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setLong(1, minHb);
             ps.setString(2, config.serverId());
             try (ResultSet rs = ps.executeQuery()) {
@@ -1317,7 +1379,7 @@ public final class RegistryDatabase {
      * Missing key ⇒ 0 links.
      */
     public Map<String, Integer> hubLinkDegrees() {
-        if (!enabled()) {
+        if (!ready()) {
             return Map.of();
         }
         String sql = """
@@ -1354,7 +1416,7 @@ public final class RegistryDatabase {
             GROUP BY peer_id
             """;
         Map<String, Integer> out = new HashMap<>();
-        try (Connection c = ds.getConnection();
+        try (Connection c = conn();
              PreparedStatement ps = c.prepareStatement(sql);
              ResultSet rs = ps.executeQuery()) {
             while (rs.next()) {
@@ -1372,13 +1434,13 @@ public final class RegistryDatabase {
     }
 
     public List<RegistryServer> listAll(long maxAgeMs) {
-        if (!enabled()) {
+        if (!ready()) {
             return List.of();
         }
         long minHb = System.currentTimeMillis() - maxAgeMs;
         String sql = "SELECT * FROM registry_servers WHERE last_heartbeat>=? ORDER BY last_heartbeat DESC";
         List<RegistryServer> list = new ArrayList<>();
-        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setLong(1, minHb);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
@@ -1393,12 +1455,12 @@ public final class RegistryDatabase {
 
     /** Admin directory: all rows including stale, newest ping first. */
     public List<RegistryServer> listAllAny(int limit) {
-        if (!enabled()) {
+        if (!ready()) {
             return List.of();
         }
         String sql = "SELECT * FROM registry_servers ORDER BY last_heartbeat DESC LIMIT ?";
         List<RegistryServer> list = new ArrayList<>();
-        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setInt(1, Math.max(1, limit));
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
@@ -1412,10 +1474,10 @@ public final class RegistryDatabase {
     }
 
     public Optional<RegistryServer> find(String serverId) {
-        if (!enabled()) {
+        if (!ready()) {
             return Optional.empty();
         }
-        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(
                 "SELECT * FROM registry_servers WHERE server_id=?")) {
             ps.setString(1, serverId);
             try (ResultSet rs = ps.executeQuery()) {
@@ -1562,7 +1624,7 @@ public final class RegistryDatabase {
     }
 
     public void publishPairInvite(String code, String portalId, String world, int x, int y, int z, long ttlMs) {
-        if (!enabled()) {
+        if (!ready()) {
             return;
         }
         long now = System.currentTimeMillis();
@@ -1572,7 +1634,7 @@ public final class RegistryDatabase {
             VALUES (?,?,?,?,?,?,?,?,?)
             ON DUPLICATE KEY UPDATE host_portal_id=VALUES(host_portal_id), expires_at=VALUES(expires_at)
             """;
-        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, code);
             ps.setString(2, config.serverId());
             ps.setString(3, portalId);
@@ -1589,11 +1651,11 @@ public final class RegistryDatabase {
     }
 
     public Optional<PairInvite> claimPairInvite(String code, String claimerPortalId) {
-        if (!enabled()) {
+        if (!ready()) {
             return Optional.empty();
         }
         long now = System.currentTimeMillis();
-        try (Connection c = ds.getConnection()) {
+        try (Connection c = conn()) {
             c.setAutoCommit(false);
             try (PreparedStatement sel = c.prepareStatement(
                     "SELECT * FROM registry_pair_invites WHERE invite_code=? FOR UPDATE")) {
@@ -1652,7 +1714,7 @@ public final class RegistryDatabase {
     public void saveTravel(String sessionId, String playerUuid, String from, String to, String toPortalId,
                            String portalType, boolean carry, String invB64, Double score, long ttlMs,
                            boolean landingReturn, String destHost, int destJavaPort) {
-        if (!enabled()) {
+        if (!ready()) {
             return;
         }
         long now = System.currentTimeMillis();
@@ -1667,7 +1729,7 @@ public final class RegistryDatabase {
               dest_host=COALESCE(VALUES(dest_host), dest_host),
               dest_java_port=COALESCE(VALUES(dest_java_port), dest_java_port)
             """;
-        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, sessionId);
             ps.setString(2, playerUuid);
             ps.setString(3, from);
@@ -1702,7 +1764,7 @@ public final class RegistryDatabase {
      * success → +transferSuccessScore / success_count++; fail (bounce) → −transferFailScore / fail_count++ / BAD_JOIN.
      */
     public void recordTransferOutcome(String host, int javaPort, boolean success, String source) {
-        if (!enabled() || host == null || host.isBlank() || javaPort <= 0) {
+        if (!ready() || host == null || host.isBlank() || javaPort <= 0) {
             return;
         }
         long now = System.currentTimeMillis();
@@ -1727,7 +1789,7 @@ public final class RegistryDatabase {
               score=GREATEST(-100, LEAST(250, COALESCE(score,0) + VALUES(score))),
               updated_at=VALUES(updated_at)
             """;
-        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, h);
             ps.setInt(2, javaPort);
             ps.setDouble(3, delta);
@@ -1752,6 +1814,377 @@ public final class RegistryDatabase {
         }
     }
 
+    /**
+     * Snapshot of one reporter's opinions (A's view of B, C, …). Replaces that reporter's rows.
+     */
+    public int ingestPeerReputation(String reporterId, JsonArray edges) {
+        if (!ready() || reporterId == null || reporterId.isBlank() || edges == null || edges.isEmpty()) {
+            return 0;
+        }
+        String reporter = reporterId.trim();
+        int n = 0;
+        String sql = """
+            INSERT INTO registry_peer_reputation(
+              reporter_id, peer_key, peer_server_id, peer_host, peer_port,
+              reputation, arrived, departed, failed, rejected, updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            ON DUPLICATE KEY UPDATE
+              peer_server_id=COALESCE(VALUES(peer_server_id), peer_server_id),
+              peer_host=COALESCE(VALUES(peer_host), peer_host),
+              peer_port=CASE WHEN VALUES(peer_port)>0 THEN VALUES(peer_port) ELSE peer_port END,
+              reputation=VALUES(reputation),
+              arrived=VALUES(arrived),
+              departed=VALUES(departed),
+              failed=VALUES(failed),
+              rejected=VALUES(rejected),
+              updated_at=VALUES(updated_at)
+            """;
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(sql)) {
+            for (JsonElement el : edges) {
+                if (!el.isJsonObject()) {
+                    continue;
+                }
+                PeerEdge e = PeerEdge.fromJson(el.getAsJsonObject());
+                if (e == null) {
+                    continue;
+                }
+                String key = PeerEdge.key(e.peerServerId(), e.peerHost(), e.peerPort());
+                ps.setString(1, reporter);
+                ps.setString(2, key);
+                ps.setString(3, e.peerServerId());
+                ps.setString(4, e.peerHost());
+                ps.setInt(5, Math.max(0, e.peerPort()));
+                ps.setInt(6, e.reputation());
+                ps.setInt(7, e.arrived());
+                ps.setInt(8, e.departed());
+                ps.setInt(9, e.failed());
+                ps.setInt(10, e.rejected());
+                ps.setLong(11, e.updatedAt() > 0 ? e.updatedAt() : System.currentTimeMillis());
+                ps.addBatch();
+                n++;
+            }
+            if (n > 0) {
+                ps.executeBatch();
+            }
+        } catch (SQLException e) {
+            plugin.getLogger().warning("ingestPeerReputation: " + e.getMessage());
+            return 0;
+        }
+        return n;
+    }
+
+    /** Idempotent hop records: who went from where to where, OK / BOUNCED / REFUSED. */
+    public int ingestHopEvents(String reporterId, JsonArray events) {
+        if (!ready() || reporterId == null || reporterId.isBlank() || events == null || events.isEmpty()) {
+            return 0;
+        }
+        String reporter = reporterId.trim();
+        int n = 0;
+        String sql = """
+            INSERT IGNORE INTO registry_hop_events(
+              id, reporter_id, player_uuid, player_name,
+              from_server, to_server, to_host, to_port, outcome, kind, at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            """;
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(sql)) {
+            for (JsonElement el : events) {
+                if (!el.isJsonObject()) {
+                    continue;
+                }
+                HopEvent e = HopEvent.fromJson(el.getAsJsonObject());
+                if (e == null) {
+                    continue;
+                }
+                String id = e.id() == null || e.id().isBlank()
+                        ? java.util.UUID.randomUUID().toString() : e.id();
+                ps.setString(1, id);
+                ps.setString(2, e.reporterId() != null ? e.reporterId() : reporter);
+                ps.setString(3, e.playerUuid());
+                String name = e.playerName();
+                if (name != null && name.length() > 32) {
+                    name = name.substring(0, 32);
+                }
+                ps.setString(4, name);
+                ps.setString(5, e.fromServer());
+                ps.setString(6, e.toServer());
+                ps.setString(7, e.toHost());
+                ps.setInt(8, Math.max(0, e.toPort()));
+                ps.setString(9, e.outcome() == null ? "OK" : e.outcome());
+                ps.setString(10, e.kind());
+                ps.setLong(11, e.at() > 0 ? e.at() : System.currentTimeMillis());
+                ps.addBatch();
+                n++;
+            }
+            if (n > 0) {
+                ps.executeBatch();
+            }
+        } catch (SQLException e) {
+            plugin.getLogger().warning("ingestHopEvents: " + e.getMessage());
+            return 0;
+        }
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(
+                "DELETE FROM registry_hop_events WHERE at < ?")) {
+            ps.setLong(1, System.currentTimeMillis() - 30L * 86_400_000L);
+            ps.executeUpdate();
+        } catch (SQLException ignored) {
+        }
+        return n;
+    }
+
+    public JsonArray exportHopEvents(String fromId, String aboutId, String aboutHost, int aboutPort, int limit) {
+        JsonArray out = new JsonArray();
+        if (!ready()) {
+            return out;
+        }
+        int cap = Math.max(1, Math.min(500, limit <= 0 ? 100 : limit));
+        StringBuilder sql = new StringBuilder("""
+                SELECT id, reporter_id, player_uuid, player_name,
+                       from_server, to_server, to_host, to_port, outcome, kind, at
+                FROM registry_hop_events
+                WHERE 1=1
+                """);
+        List<Object> args = new ArrayList<>();
+        if (fromId != null && !fromId.isBlank()) {
+            sql.append(" AND (from_server=? OR reporter_id=?)");
+            args.add(fromId.trim());
+            args.add(fromId.trim());
+        }
+        if (aboutId != null && !aboutId.isBlank()) {
+            sql.append(" AND (to_server=? OR from_server=?)");
+            args.add(aboutId.trim());
+            args.add(aboutId.trim());
+        }
+        if (aboutHost != null && !aboutHost.isBlank()) {
+            sql.append(" AND to_host=?");
+            args.add(aboutHost.trim().toLowerCase(java.util.Locale.ROOT));
+            if (aboutPort > 0) {
+                sql.append(" AND to_port=?");
+                args.add(aboutPort);
+            }
+        }
+        sql.append(" ORDER BY at DESC LIMIT ?");
+        args.add(cap);
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(sql.toString())) {
+            for (int i = 0; i < args.size(); i++) {
+                Object a = args.get(i);
+                if (a instanceof Integer n) {
+                    ps.setInt(i + 1, n);
+                } else if (a instanceof Long n) {
+                    ps.setLong(i + 1, n);
+                } else {
+                    ps.setString(i + 1, String.valueOf(a));
+                }
+            }
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    HopEvent e = new HopEvent(
+                            rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4),
+                            rs.getString(5), rs.getString(6), rs.getString(7), rs.getInt(8),
+                            rs.getString(9), rs.getString(10), rs.getLong(11));
+                    out.add(e.toJson());
+                }
+            }
+        } catch (SQLException e) {
+            plugin.getLogger().warning("exportHopEvents: " + e.getMessage());
+        }
+        return out;
+    }
+
+    public JsonObject exportPeerReputation(String fromId, String aboutId, String aboutHost, int aboutPort, int limit) {
+        JsonObject out = new JsonObject();
+        out.addProperty("ok", true);
+        JsonArray edges = new JsonArray();
+        if (!ready()) {
+            out.add("edges", edges);
+            out.addProperty("count", 0);
+            out.addProperty("ok", false);
+            out.addProperty("error", "registry unavailable");
+            return out;
+        }
+        int cap = Math.max(1, Math.min(500, limit <= 0 ? 200 : limit));
+        StringBuilder sql = new StringBuilder("""
+                SELECT reporter_id, peer_server_id, peer_host, peer_port,
+                       reputation, arrived, departed, failed, COALESCE(rejected, 0), updated_at
+                FROM registry_peer_reputation
+                WHERE 1=1
+                """);
+        List<Object> args = new ArrayList<>();
+        if (fromId != null && !fromId.isBlank()) {
+            sql.append(" AND reporter_id=?");
+            args.add(fromId.trim());
+        }
+        if (aboutId != null && !aboutId.isBlank()) {
+            sql.append(" AND (peer_server_id=? OR peer_key=?)");
+            String id = aboutId.trim();
+            args.add(id);
+            args.add(PeerEdge.key(id, null, 0));
+        }
+        if (aboutHost != null && !aboutHost.isBlank()) {
+            sql.append(" AND peer_host=?");
+            args.add(aboutHost.trim().toLowerCase(java.util.Locale.ROOT));
+            if (aboutPort > 0) {
+                sql.append(" AND peer_port=?");
+                args.add(aboutPort);
+            }
+        }
+        sql.append(" ORDER BY updated_at DESC LIMIT ?");
+        args.add(cap);
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(sql.toString())) {
+            for (int i = 0; i < args.size(); i++) {
+                Object a = args.get(i);
+                if (a instanceof Integer n) {
+                    ps.setInt(i + 1, n);
+                } else if (a instanceof Long n) {
+                    ps.setLong(i + 1, n);
+                } else {
+                    ps.setString(i + 1, String.valueOf(a));
+                }
+            }
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    JsonObject o = new JsonObject();
+                    o.addProperty("from", rs.getString(1));
+                    String sid = rs.getString(2);
+                    if (sid != null && !sid.isBlank()) {
+                        o.addProperty("to", sid);
+                    }
+                    String host = rs.getString(3);
+                    if (host != null && !host.isBlank()) {
+                        o.addProperty("host", host);
+                    }
+                    int port = rs.getInt(4);
+                    if (port > 0) {
+                        o.addProperty("port", port);
+                    }
+                    o.addProperty("reputation", rs.getInt(5));
+                    int received = rs.getInt(6);
+                    int sent = rs.getInt(7);
+                    int bounced = rs.getInt(8);
+                    int refused = rs.getInt(9);
+                    o.addProperty("arrived", received);
+                    o.addProperty("departed", sent);
+                    o.addProperty("failed", bounced);
+                    o.addProperty("rejected", refused);
+                    o.addProperty("receivedOk", received);
+                    o.addProperty("sentOk", sent);
+                    o.addProperty("bounced", bounced);
+                    o.addProperty("refused", refused);
+                    o.addProperty("updatedAt", rs.getLong(10));
+                    edges.add(o);
+                }
+            }
+        } catch (SQLException e) {
+            plugin.getLogger().warning("exportPeerReputation: " + e.getMessage());
+            out.addProperty("ok", false);
+        }
+        out.add("edges", edges);
+        out.addProperty("count", edges.size());
+        JsonArray dests = destHopStatsJson(Math.min(200, cap));
+        if (dests.size() > 0) {
+            out.add("dests", dests);
+        }
+        JsonArray events = exportHopEvents(fromId, aboutId, aboutHost, aboutPort, cap);
+        out.add("events", events);
+        out.addProperty("eventCount", events.size());
+        return out;
+    }
+
+    /**
+     * Rollup per destination for Multi bind: who successfully landed there vs bounced vs dest refused.
+     * {@code succeeded}/{@code bounced} come from origin reports about the dest;
+     * {@code accepted}/{@code refused} come from the dest reporting inbound.
+     */
+    public JsonArray destHopStatsJson(int limit) {
+        JsonArray out = new JsonArray();
+        if (!ready()) {
+            return out;
+        }
+        int cap = Math.max(1, Math.min(500, limit <= 0 ? 200 : limit));
+        Map<String, int[]> byKey = new LinkedHashMap<>();
+        Map<String, String[]> meta = new LinkedHashMap<>();
+        String sql = """
+            SELECT r.reporter_id, r.peer_server_id, r.peer_host, r.peer_port,
+                   r.arrived, r.departed, r.failed, COALESCE(r.rejected, 0),
+                   s.public_host, s.public_port
+            FROM registry_peer_reputation r
+            LEFT JOIN registry_servers s ON s.server_id = r.reporter_id
+            """;
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(sql);
+             ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) {
+                String reporter = rs.getString(1);
+                String peerId = rs.getString(2);
+                String peerHost = rs.getString(3);
+                int peerPort = rs.getInt(4);
+                int arrived = rs.getInt(5);
+                int departed = rs.getInt(6);
+                int failed = rs.getInt(7);
+                int rejected = rs.getInt(8);
+                String reporterHost = rs.getString(9);
+                int reporterPort = rs.getInt(10);
+
+                String destKey = PeerEdge.key(peerId, peerHost, peerPort);
+                int[] dest = byKey.computeIfAbsent(destKey, k -> new int[4]);
+                dest[0] += Math.max(0, departed);
+                dest[1] += Math.max(0, failed);
+                meta.putIfAbsent(destKey, new String[]{
+                        peerId == null ? "" : peerId,
+                        peerHost == null ? "" : peerHost,
+                        String.valueOf(Math.max(0, peerPort))
+                });
+
+                String selfKey = PeerEdge.key(reporter, reporterHost, reporterPort);
+                int[] self = byKey.computeIfAbsent(selfKey, k -> new int[4]);
+                self[2] += Math.max(0, arrived);
+                self[3] += Math.max(0, rejected);
+                meta.putIfAbsent(selfKey, new String[]{
+                        reporter == null ? "" : reporter,
+                        reporterHost == null ? "" : reporterHost,
+                        String.valueOf(Math.max(0, reporterPort))
+                });
+            }
+        } catch (SQLException e) {
+            plugin.getLogger().warning("destHopStats: " + e.getMessage());
+            return out;
+        }
+        List<Map.Entry<String, int[]>> rows = new ArrayList<>(byKey.entrySet());
+        rows.sort((a, b) -> Integer.compare(
+                b.getValue()[0] + b.getValue()[2],
+                a.getValue()[0] + a.getValue()[2]));
+        int n = 0;
+        for (Map.Entry<String, int[]> e : rows) {
+            int[] v = e.getValue();
+            if (v[0] == 0 && v[1] == 0 && v[2] == 0 && v[3] == 0) {
+                continue;
+            }
+            String[] m = meta.get(e.getKey());
+            JsonObject o = new JsonObject();
+            if (m != null && m[0] != null && !m[0].isBlank()) {
+                o.addProperty("serverId", m[0]);
+            }
+            if (m != null && m[1] != null && !m[1].isBlank()) {
+                o.addProperty("host", m[1]);
+            }
+            int port = 0;
+            try {
+                port = m == null ? 0 : Integer.parseInt(m[2]);
+            } catch (NumberFormatException ignored) {
+            }
+            if (port > 0) {
+                o.addProperty("port", port);
+            }
+            o.addProperty("succeeded", v[0]);
+            o.addProperty("bounced", v[1]);
+            o.addProperty("accepted", v[2]);
+            o.addProperty("refused", v[3]);
+            out.add(o);
+            if (++n >= cap) {
+                break;
+            }
+        }
+        return out;
+    }
+
     private double transferSuccessScore() {
         return Math.max(0.0, plugin.getConfig().getDouble("scanner.hub-pool.transfer-success-score", 20.0));
     }
@@ -1765,10 +2198,10 @@ public final class RegistryDatabase {
      * Does not require knowing the Minecraft disconnect reason.
      */
     public void markTravelBounced(String sessionId) {
-        if (!enabled() || sessionId == null || sessionId.isBlank()) {
+        if (!ready() || sessionId == null || sessionId.isBlank()) {
             return;
         }
-        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement("""
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement("""
                 UPDATE registry_travel
                 SET status='BOUNCED'
                 WHERE session_id=? AND status IN ('PENDING','ARRIVED')
@@ -1785,12 +2218,12 @@ public final class RegistryDatabase {
 
     /** Fallback when session id unknown: latest pending hop from this origin for the player. */
     public void markRecentTravelBounced(String playerUuid, String fromServerId, long withinMs) {
-        if (!enabled() || playerUuid == null || playerUuid.isBlank()) {
+        if (!ready() || playerUuid == null || playerUuid.isBlank()) {
             return;
         }
         long cutoff = System.currentTimeMillis() - Math.max(1_000L, withinMs);
         String from = fromServerId == null ? "" : fromServerId.trim();
-        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement("""
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement("""
                 UPDATE registry_travel
                 SET status='BOUNCED'
                 WHERE player_uuid=? AND status IN ('PENDING','ARRIVED') AND created_at>=?
@@ -1821,7 +2254,7 @@ public final class RegistryDatabase {
      * (local join, or hub /travel/claim for leaf servers without MySQL).
      */
     public Optional<RegistryTravel> takePendingTravel(String playerUuid, String toServerId) {
-        if (!enabled() || playerUuid == null || playerUuid.isBlank()
+        if (!ready() || playerUuid == null || playerUuid.isBlank()
                 || toServerId == null || toServerId.isBlank()) {
             return Optional.empty();
         }
@@ -1831,7 +2264,7 @@ public final class RegistryDatabase {
             WHERE player_uuid=? AND status='PENDING' AND to_server=? AND expires_at>=?
             ORDER BY created_at DESC LIMIT 1
             """;
-        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, playerUuid);
             ps.setString(2, toServerId);
             ps.setLong(3, now);
@@ -1887,14 +2320,14 @@ public final class RegistryDatabase {
 
     /** Historical arrivals to this server recorded in the hub registry. */
     public long countArrivalsToThisServer() {
-        if (!enabled()) {
+        if (!ready()) {
             return 0L;
         }
         String sql = """
             SELECT COUNT(*) FROM registry_travel
             WHERE to_server=? AND status IN ('ARRIVED','RETURNED')
             """;
-        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, config.serverId());
             try (ResultSet rs = ps.executeQuery()) {
                 return rs.next() ? rs.getLong(1) : 0L;
@@ -1907,7 +2340,7 @@ public final class RegistryDatabase {
 
     /** Invites we hosted that were claimed by the other side — activate PAIR on host. */
     public List<ClaimedPair> listClaimedForHost() {
-        if (!enabled()) {
+        if (!ready()) {
             return List.of();
         }
         String sql = """
@@ -1916,7 +2349,7 @@ public final class RegistryDatabase {
             WHERE host_server_id=? AND claimed_by_server IS NOT NULL
             """;
         List<ClaimedPair> list = new ArrayList<>();
-        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, config.serverId());
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
@@ -1975,7 +2408,7 @@ public final class RegistryDatabase {
     ) {}
 
     public int upsertScannerFromScanned(List<io.multiverseportals.scanner.ScannedServer> servers) {
-        if (!enabled() || servers == null || servers.isEmpty()) {
+        if (!ready() || servers == null || servers.isEmpty()) {
             return 0;
         }
         long now = System.currentTimeMillis();
@@ -2005,7 +2438,7 @@ public final class RegistryDatabase {
             """;
         int n = 0;
         long deadCutoff = now - 900_000L;
-        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(sql)) {
             for (var s : servers) {
                 if (s == null || s.host() == null || s.host().isBlank() || s.port() <= 0) {
                     continue;
@@ -2058,7 +2491,7 @@ public final class RegistryDatabase {
             String source,
             Double scoreDelta
     ) {
-        if (!enabled() || host == null || host.isBlank() || javaPort <= 0 || status == null) {
+        if (!ready() || host == null || host.isBlank() || javaPort <= 0 || status == null) {
             return;
         }
         long now = System.currentTimeMillis();
@@ -2107,7 +2540,7 @@ public final class RegistryDatabase {
               score=GREATEST(-100, LEAST(250, COALESCE(score,0) + VALUES(score))),
               updated_at=VALUES(updated_at)
             """;
-        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, h);
             ps.setInt(2, javaPort);
             ps.setString(3, mcVersion);
@@ -2156,7 +2589,7 @@ public final class RegistryDatabase {
             double minScore,
             Set<String> excludeHosts
     ) {
-        if (!enabled()) {
+        if (!ready()) {
             return List.of();
         }
         int lim = Math.max(1, Math.min(200, limit <= 0 ? 40 : limit));
@@ -2189,7 +2622,7 @@ public final class RegistryDatabase {
                 .append(" LIMIT ?");
 
         List<ScannerHost> out = new ArrayList<>();
-        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql.toString())) {
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(sql.toString())) {
             int i = 1;
             ps.setDouble(i++, minScore);
             ps.setLong(i++, staleFail);
@@ -2222,7 +2655,7 @@ public final class RegistryDatabase {
 
     /** Top rows for hub re-probe (freshest / highest score). */
     public List<ScannerHost> listScannerHostsForProbe(int limit) {
-        if (!enabled()) {
+        if (!ready()) {
             return List.of();
         }
         int lim = Math.max(1, Math.min(100, limit));
@@ -2241,7 +2674,7 @@ public final class RegistryDatabase {
             LIMIT ?
             """;
         List<ScannerHost> out = new ArrayList<>();
-        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setInt(1, lim);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
@@ -2255,10 +2688,10 @@ public final class RegistryDatabase {
     }
 
     public int scannerHostCount() {
-        if (!enabled()) {
+        if (!ready()) {
             return 0;
         }
-        try (Connection c = ds.getConnection();
+        try (Connection c = conn();
              PreparedStatement ps = c.prepareStatement("SELECT COUNT(*) FROM registry_scanner_hosts");
              ResultSet rs = ps.executeQuery()) {
             return rs.next() ? rs.getInt(1) : 0;
@@ -2269,14 +2702,14 @@ public final class RegistryDatabase {
 
     /** Latest known online count for a scanned host (null if unknown). */
     public Integer scannerOnlinePlayers(String host, int javaPort) {
-        if (!enabled() || host == null || host.isBlank() || javaPort <= 0) {
+        if (!ready() || host == null || host.isBlank() || javaPort <= 0) {
             return null;
         }
         String sql = """
             SELECT online_players FROM registry_scanner_hosts
             WHERE host=? AND java_port=? LIMIT 1
             """;
-        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, host.trim().toLowerCase(java.util.Locale.ROOT));
             ps.setInt(2, javaPort);
             try (ResultSet rs = ps.executeQuery()) {

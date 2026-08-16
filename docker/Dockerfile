@@ -22,11 +22,14 @@ ENV EULA=TRUE \
     USE_AIKAR_FLAGS=true \
     ENABLE_ROLLING_LOGS=true \
     MOTD="" \
-    CREATE_CONSOLE_IN_PIPE=true
+    CREATE_CONSOLE_IN_PIPE=true \
+    UPDATE_BEDROCK_BRIDGE=true \
+    UPDATE_MVP=true \
+    SYNC_SKIP_NEWER_IN_DESTINATION=true
 
 USER root
 RUN apt-get update \
- && apt-get install -y --no-install-recommends curl ca-certificates gettext-base jq \
+ && apt-get install -y --no-install-recommends curl ca-certificates gettext-base jq unzip \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /plugins
@@ -36,9 +39,9 @@ RUN set -euo pipefail \
       "https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/spigot" \
  && curl -fsSL -o floodgate-spigot.jar \
       "https://download.geysermc.org/v2/projects/floodgate/versions/latest/builds/latest/downloads/spigot" \
- && VV_URL="$(curl -fsSL 'https://hangar.papermc.io/api/v1/projects/ViaVersion/versions?limit=1&platform=PAPER' \
+ && VV_URL="$(curl -fsSL 'https://hangar.papermc.io/api/v1/projects/ViaVersion/ViaVersion/versions?limit=1' \
       | jq -r '.result[0].downloads.PAPER.downloadUrl')" \
- && VB_URL="$(curl -fsSL 'https://hangar.papermc.io/api/v1/projects/ViaBackwards/versions?limit=1&platform=PAPER' \
+ && VB_URL="$(curl -fsSL 'https://hangar.papermc.io/api/v1/projects/ViaVersion/ViaBackwards/versions?limit=1' \
       | jq -r '.result[0].downloads.PAPER.downloadUrl')" \
  && curl -fsSL -o ViaVersion.jar "$VV_URL" \
  && curl -fsSL -o ViaBackwards.jar "$VB_URL" \
@@ -46,10 +49,11 @@ RUN set -euo pipefail \
 
 COPY ${MVP_JAR} /plugins/MultiversePortals.jar
 COPY docker/config/server.properties /config/server.properties
+COPY docker/update-bedrock-bridge.sh /image/update-bedrock-bridge.sh
 COPY docker/mvp/ /image/mvp/
 COPY docker/entrypoint.sh /mvp-entrypoint.sh
-RUN sed -i 's/\r$//' /mvp-entrypoint.sh /image/mvp/fun-server-name.sh \
- && chmod +x /mvp-entrypoint.sh /image/mvp/fun-server-name.sh \
+RUN sed -i 's/\r$//' /mvp-entrypoint.sh /image/mvp/fun-server-name.sh /image/update-bedrock-bridge.sh \
+ && chmod +x /mvp-entrypoint.sh /image/mvp/fun-server-name.sh /image/update-bedrock-bridge.sh \
  && chown -R minecraft:minecraft /plugins /config /image/mvp \
  && ls -la /plugins/MultiversePortals.jar
 

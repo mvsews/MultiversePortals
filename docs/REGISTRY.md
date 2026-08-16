@@ -49,7 +49,8 @@ Hub plugin   --------->  Universal database
 ## Public hub
 
 - Landing (idea + jar + live graph): [https://mp.mvse.ws/](https://mp.mvse.ws/)
-- Versioned jar: [https://mp.mvse.ws/download/MultiversePortals-1.1.15.jar](https://mp.mvse.ws/download/MultiversePortals-1.1.15.jar)  
+- Server list (reputation / hops): [https://mp.mvse.ws/list](https://mp.mvse.ws/list)
+- Versioned jar: [https://mp.mvse.ws/download/MultiversePortals-1.2.17.jar](https://mp.mvse.ws/download/MultiversePortals-1.2.17.jar)  
   (stable alias: `/download/MultiversePortals.jar`)
 - Version metadata: [https://mp.mvse.ws/version.json](https://mp.mvse.ws/version.json)
 - API: `https://mp.mvse.ws/mvp/v1`
@@ -60,7 +61,7 @@ Typical edge TLS: reverse proxy / CDN in front of the origin. Origin should not 
 
 On normal servers use the website graph / catalog API. Hub operators have in-game `/mvp registry …` for local diagnostics.
 
-In JSON `/catalog/export` each server has presence fields (`lastSeenAt`, `lastPingAgeSec`, `lastPingAgo`), a `caps` block (no full plugin list), and a `portals` array (graph edges). Offline peers on the map are shown muted when the last ping is stale (or after a graceful shutdown notify).
+In JSON `/catalog/export` each server has presence fields (`lastSeenAt`, `lastPingAgeSec`, `lastPingAgo`), `mvpVersion` (installed Multiverse Portals version, also in `caps.mvpVersion` and MySQL `registry_servers.mvp_version`), a `caps` block (no full plugin list), and a `portals` array (graph edges). Peers **push** their version on every catalog announce; the hub does not scrape it. Empty values do not wipe a previously stored version. Hub ops: `/mvp registry list` shows `mvp=`.
 
 ---
 
@@ -72,6 +73,12 @@ Within 3 blocks those texts are published as `signs: ["…"]` in the catalog / A
 ```bash
 curl -s https://mp.mvse.ws/mvp/v1/portals
 curl -s 'https://mp.mvse.ws/mvp/v1/portals?serverId=YOUR_SERVER_ID'
+
+# Hop records: who went from where to where (OK / BOUNCED / REFUSED). Leaves push; hub does not scrape.
+curl -s 'https://mp.mvse.ws/mvp/v1/reputation'
+curl -s 'https://mp.mvse.ws/mvp/v1/reputation?from=SERVER_A'
+curl -s 'https://mp.mvse.ws/mvp/v1/reputation?from=SERVER_A&about=SERVER_B'
+curl -s 'https://mp.mvse.ws/mvp/v1/reputation?host=1.2.3.4&port=25565'
 
 # Live badges (English) — branded SVG for README, JSON for shields.io
 curl -s https://mp.mvse.ws/mvp/v1/badge/players.svg
@@ -96,6 +103,7 @@ To run your own catalog hub: enable `registry.enabled: true` on one host, put a 
 - Presence timestamps and online/offline for the map  
 - Branding: MOTD → name/description, `server-icon.png` → icon (`GET /mvp/v1/icon/{id}`)  
 - Portal graph: world/xyz, type, dest host/serverId, `returnCapable` (no secrets)  
+- Hop records: each listed server pushes `hopEvents[]` (`player`, `from`, `to`/`host`, `outcome` = OK / BOUNCED / REFUSED). Hub stores the rows. `peerReputation[]` is a rolling summary for bind ranking.  
 - **Not** shared: peer secrets, inventory contents, local scanner probe cache, database credentials
 
 Pull runs every `interval-seconds` (default **900** / ~15 min). Extra announce also fires when a portal is created or bound. Bind / `[Multi]` prefer: **hub pool → known club → scanners**.

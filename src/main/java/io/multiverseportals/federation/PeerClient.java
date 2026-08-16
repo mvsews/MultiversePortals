@@ -13,6 +13,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
@@ -90,7 +91,12 @@ public final class PeerClient {
     }
 
     public Optional<JsonObject> catalogExport(String federationBaseUrl) {
-        return postCatalog(federationBaseUrl, "/catalog/export", new JsonObject());
+        return catalogExport(federationBaseUrl, Duration.ofSeconds(10));
+    }
+
+    public Optional<JsonObject> catalogExport(String federationBaseUrl, Duration timeout) {
+        return postCatalog(federationBaseUrl, "/catalog/export", new JsonObject(),
+                timeout == null ? Duration.ofSeconds(10) : timeout);
     }
 
     public Optional<JsonObject> catalogAnnounce(String federationBaseUrl, JsonObject snapshot) {
@@ -136,6 +142,22 @@ public final class PeerClient {
         }
         Long until = hubCooldownUntilMs.get(hubKey(federationBaseUrl));
         return until != null && System.currentTimeMillis() < until;
+    }
+
+    /** True when every configured official hub is in fail-open cooldown. */
+    public boolean officialHubUnavailable() {
+        List<String> hubs = config.catalogShareBootstrapUrls();
+        boolean any = false;
+        for (String u : hubs) {
+            if (u == null || u.isBlank() || "none".equalsIgnoreCase(u.trim())) {
+                continue;
+            }
+            any = true;
+            if (!isHubCoolingDown(u)) {
+                return false;
+            }
+        }
+        return any;
     }
 
     public Optional<PeerPolicy> fetchPolicy(TrustedPeer peer) {

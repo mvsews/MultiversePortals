@@ -34,6 +34,7 @@ public final class PortalService {
     private final PluginConfig config;
     private BukkitTask heartbeatTask;
     private BukkitTask registryTask;
+    private final Map<String, FrameDetector.Scan> scanCache = new HashMap<>();
 
     public PortalService(MultiversePortalsPlugin plugin, Database db, RegistryDatabase registry, PluginConfig config) {
         this.plugin = plugin;
@@ -52,6 +53,12 @@ public final class PortalService {
         }
         // Particles inside portal matter + keep displays present
         Bukkit.getScheduler().runTaskTimer(plugin, this::matterTick, 40L, 10L);
+        long rebindPeriod = Math.max(60, config.scannerRefreshSeconds()) * 20L;
+        Bukkit.getScheduler().runTaskTimerAsynchronously(plugin, () -> {
+            if (plugin.portalBindService() != null) {
+                plugin.portalBindService().tickOfflineRebind();
+            }
+        }, rebindPeriod, rebindPeriod);
     }
 
     private void matterTick() {
@@ -164,40 +171,17 @@ public final class PortalService {
     private void heartbeatTick() {
         // Sign/block state must be read on the main thread (Paper throws on async access).
         Bukkit.getScheduler().runTask(plugin, () -> {
-            List<String> multiGone = new ArrayList<>();
+            List<String> gone = new ArrayList<>();
             for (Portal portal : db.listPortals()) {
                 boolean hasSign = hasPortalSign(portal);
                 boolean intact = hasSign && isLocalIntact(portal);
 
-                if (portal.type() == PortalType.MULTI) {
-                    if (!hasSign) {
-                        // Only delete when the control sign is gone (player broke it to re-roll).
-                        multiGone.add(portal.id());
-                        continue;
-                    }
-                    if (!intact) {
-                        // Nearby rebuild changed shape hash — keep sticky bind, refresh hash.
-                        refreshShapeHash(portal);
-                    }
-                    if (portal.status() == PortalStatus.BROKEN_LOCAL) {
-                        portal.setStatus(PortalStatus.ACTIVE);
-                        db.savePortal(portal);
-                        PortalSigns.update(portal);
-                        if (plugin.portalMatter() != null) {
-                            plugin.portalMatter().refresh(portal);
-                        }
-                    }
-                } else if (!intact && portal.status() == PortalStatus.ACTIVE) {
-                    portal.setStatus(PortalStatus.BROKEN_LOCAL);
-                    db.savePortal(portal);
-                    PortalSigns.update(portal);
-                    notifyPairBroken(portal);
-                    if (plugin.portalMatter() != null) {
-                        plugin.portalMatter().remove(portal.id());
-                    }
-                } else if (intact && portal.status() == PortalStatus.BROKEN_LOCAL) {
-                    // stays broken until remote confirms; local heal alone is not enough for PAIR
+                if (!hasSign && (portal.type() == PortalType.MULTI || portal.type() == PortalType.AWAY)) {
+                    gone.add(portal.id());
+                    continue;
                 }
+
+                applyFrameIntegrity(portal, hasSign, intact, true);
 
                 if (portal.type() == PortalType.PAIR && portal.pairServerId() != null) {
                     final boolean intactFinal = intact;
@@ -214,10 +198,65 @@ public final class PortalService {
                             }));
                 }
             }
-            for (String id : multiGone) {
+            for (String id : gone) {
                 delete(id);
             }
         });
+    }
+
+    /**
+     * Closed ring → keep/restore ACTIVE (MULTI/AWAY). Open ring → BROKEN_LOCAL and drop matter.
+     * {@code heartbeat} is lenient: a sticky bound portal is not unmarked just because the
+     * flood-fill leaked (packed rings / leftover vanilla nether sheet).
+     */
+    public void applyFrameIntegrity(Portal portal, boolean hasSign, boolean intact) {
+        applyFrameIntegrity(portal, hasSign, intact, false);
+    }
+
+    public void applyFrameIntegrity(Portal portal, boolean hasSign, boolean intact, boolean heartbeat) {
+        if (portal == null || !hasSign) {
+            return;
+        }
+        invalidateScan(portal.id());
+        if (!intact) {
+            if (heartbeat && portal.status() == PortalStatus.ACTIVE
+                    && (portal.hasBoundDestination() || portal.hasAwayDestination())) {
+                return;
+            }
+            if (portal.status() == PortalStatus.ACTIVE) {
+                portal.setStatus(PortalStatus.BROKEN_LOCAL);
+                db.savePortal(portal);
+                PortalSigns.update(portal);
+                if (portal.type() == PortalType.PAIR) {
+                    notifyPairBroken(portal);
+                }
+                if (plugin.portalMatter() != null) {
+                    plugin.portalMatter().remove(portal.id());
+                }
+            }
+            return;
+        }
+        if (portal.status() == PortalStatus.BROKEN_LOCAL
+                && (portal.type() == PortalType.MULTI || portal.type() == PortalType.AWAY)) {
+            boolean ready = portal.type() == PortalType.AWAY
+                    ? portal.hasAwayDestination()
+                    : portal.hasBoundDestination();
+            portal.setStatus(ready ? PortalStatus.ACTIVE : PortalStatus.BINDING);
+            db.savePortal(portal);
+            PortalSigns.update(portal);
+            if (plugin.portalMatter() != null) {
+                plugin.portalMatter().refresh(portal);
+            }
+        }
+    }
+
+    public void checkFrameNow(Portal portal) {
+        boolean hasSign = hasPortalSign(portal);
+        if (!hasSign && (portal.type() == PortalType.MULTI || portal.type() == PortalType.AWAY)) {
+            delete(portal.id());
+            return;
+        }
+        applyFrameIntegrity(portal, hasSign, hasSign && isLocalIntact(portal));
     }
 
     private void refreshShapeHash(Portal portal) {
@@ -273,8 +312,64 @@ public final class PortalService {
         if (!ShapeHasher.looksLikePortalSign(block)) {
             return false;
         }
-        String hash = ShapeHasher.hashAround(block.getLocation());
-        return hash.equals(portal.frame().shapeHash());
+        FrameDetector.Scan scan = scanOf(portal);
+        return scan.closed();
+    }
+
+    public boolean isInsideOpening(Portal portal, Location loc) {
+        if (portal == null || loc == null || loc.getWorld() == null) {
+            return false;
+        }
+        if (!loc.getWorld().getName().equals(portal.frame().world())) {
+            return false;
+        }
+        FrameDetector.Scan scan = scanOf(portal);
+        if (!scan.closed()) {
+            return false;
+        }
+        int x = loc.getBlockX();
+        int y = loc.getBlockY();
+        int z = loc.getBlockZ();
+        return scan.interiorContains(x, y, z) || scan.interiorContains(x, y + 1, z);
+    }
+
+    /** On the ring (lintel / jamb), not in the purple sheet. */
+    public boolean isStandingOnFrame(Portal portal, Location loc) {
+        if (portal == null || loc == null || loc.getWorld() == null) {
+            return false;
+        }
+        if (isInsideOpening(portal, loc)) {
+            return false;
+        }
+        FrameDetector.Scan scan = scanOf(portal);
+        int x = loc.getBlockX();
+        int y = loc.getBlockY();
+        int z = loc.getBlockZ();
+        return scan.frameContains(x, y, z) || scan.frameContains(x, y - 1, z);
+    }
+
+    public FrameDetector.Scan scanOf(Portal portal) {
+        if (portal == null) {
+            return FrameDetector.Scan.open();
+        }
+        FrameDetector.Scan cached = scanCache.get(portal.id());
+        if (cached != null) {
+            return cached;
+        }
+        World world = Bukkit.getWorld(portal.frame().world());
+        if (world == null) {
+            return FrameDetector.Scan.open();
+        }
+        Block sign = world.getBlockAt(portal.frame().x(), portal.frame().y(), portal.frame().z());
+        FrameDetector.Scan scan = FrameDetector.scan(sign, config.maxFrameRadius());
+        scanCache.put(portal.id(), scan);
+        return scan;
+    }
+
+    public void invalidateScan(String portalId) {
+        if (portalId != null) {
+            scanCache.remove(portalId);
+        }
     }
 
     /** Sign still present (MVP/control), even if nearby frame blocks changed. */
@@ -292,9 +387,47 @@ public final class PortalService {
         if (w == null) {
             return Optional.empty();
         }
-        // Always nearest frame — adjacent portals (4 blocks apart) must not steal each other's plates.
         Portal best = null;
-        double bestDist = 5.5;
+        double bestDistSq = Double.POSITIVE_INFINITY;
+        for (Portal portal : db.listPortals()) {
+            if (!w.getName().equals(portal.frame().world())) {
+                continue;
+            }
+            FrameDetector.Scan scan = scanOf(portal);
+            if (!scan.closed()) {
+                continue;
+            }
+            for (Location cell : scan.interior()) {
+                double d = loc.distanceSquared(cell.clone().add(0.5, 0.05, 0.5));
+                if (d < 2.25 && d < bestDistSq) {
+                    bestDistSq = d;
+                    best = portal;
+                }
+            }
+        }
+        if (best != null) {
+            return Optional.of(best);
+        }
+        for (Portal portal : db.listPortals()) {
+            if (!w.getName().equals(portal.frame().world())) {
+                continue;
+            }
+            FrameDetector.Scan scan = scanOf(portal);
+            if (!scan.closed()) {
+                continue;
+            }
+            for (Block fb : scan.frameBlocks()) {
+                double d = loc.distanceSquared(fb.getLocation().add(0.5, 0.5, 0.5));
+                if (d < 2.25 && d < bestDistSq) {
+                    bestDistSq = d;
+                    best = portal;
+                }
+            }
+        }
+        if (best != null) {
+            return Optional.of(best);
+        }
+        double bestDist = Double.POSITIVE_INFINITY;
         for (Portal portal : db.listPortals()) {
             if (!w.getName().equals(portal.frame().world())) {
                 continue;
@@ -303,12 +436,45 @@ public final class PortalService {
             double dy = portal.frame().y() + 0.5 - loc.getY();
             double dz = portal.frame().z() + 0.5 - loc.getZ();
             double dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-            if (dist < bestDist) {
+            if (dist < 2.75 && dist < bestDist) {
                 bestDist = dist;
                 best = portal;
             }
         }
         return Optional.ofNullable(best);
+    }
+
+    /** Portals whose frame/interior includes this block (or sign within radius). */
+    public List<Portal> findAffectedByBlock(Block block) {
+        List<Portal> out = new ArrayList<>();
+        if (block == null || block.getWorld() == null) {
+            return out;
+        }
+        String world = block.getWorld().getName();
+        int r = config.maxFrameRadius() + 2;
+        for (Portal portal : db.listPortals()) {
+            if (!world.equals(portal.frame().world())) {
+                continue;
+            }
+            int dx = Math.abs(portal.frame().x() - block.getX());
+            int dy = Math.abs(portal.frame().y() - block.getY());
+            int dz = Math.abs(portal.frame().z() - block.getZ());
+            if (Math.max(dx, Math.max(dy, dz)) > r) {
+                continue;
+            }
+            if (portal.frame().x() == block.getX()
+                    && portal.frame().y() == block.getY()
+                    && portal.frame().z() == block.getZ()) {
+                out.add(portal);
+                continue;
+            }
+            invalidateScan(portal.id());
+            FrameDetector.Scan scan = scanOf(portal);
+            if (scan.contains(block.getX(), block.getY(), block.getZ())) {
+                out.add(portal);
+            }
+        }
+        return out;
     }
 
     public Portal createFromSign(Player player, Block signBlock, PortalType type, String name) {
@@ -322,7 +488,7 @@ public final class PortalService {
         PortalFrame frame = PortalFrame.from(signBlock.getLocation(), hash);
         String id = UUID.randomUUID().toString();
         PortalStatus status = type == PortalType.PAIR ? PortalStatus.PENDING_PAIR
-                : (type == PortalType.MULTI ? PortalStatus.BINDING : PortalStatus.ACTIVE);
+                : (type == PortalType.MULTI || type == PortalType.AWAY ? PortalStatus.BINDING : PortalStatus.ACTIVE);
         Portal portal = new Portal(id, type, status, frame, name, player.getUniqueId());
         if (type == PortalType.PAIR) {
             portal.setPairInviteCode(randomCode());
@@ -671,10 +837,15 @@ public final class PortalService {
             if (plugin.portalBindService() != null) {
                 plugin.portalBindService().cancel(id);
             }
+            if (plugin.biomePortalService() != null && p.type() == PortalType.AWAY) {
+                plugin.biomePortalService().onPortalDeleted(p);
+            }
+            invalidateScan(id);
             if (plugin.portalMatter() != null) {
                 plugin.portalMatter().remove(id);
             }
             db.deletePortal(id);
+            db.deleteGuestHomesForPortal(id);
             publishPortalGraphAsync();
         });
     }

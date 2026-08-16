@@ -1,6 +1,8 @@
 # Multiverse Portals — technical reference
 
 Deep notes for operators who already finished the [main README](../README.md).  
+Intended behavior (frames, Away, guest home, type gates): [CONCEPTS.md](CONCEPTS.md).  
+Quiet servers that want inbound players: [GROWTH.md](GROWTH.md) (EN / RU / DE).  
 中文概览见 [README.zh.md](../README.zh.md)；русская версия: [README.ru.md](../README.ru.md)；каталог/хаб: [REGISTRY.md](REGISTRY.md).
 
 ---
@@ -63,12 +65,17 @@ Local wool portals, `[Pair]`, and `[To]` by IP keep working in local-only mode.
 
 | | |
 |---|---|
-| **Sign portals** | `[Multi]` / `[mvp]` / `[portal]` / `[Random]`, `[To]`, `[Pair]` |
+| **Sign portals** | `[Multi]` / `Портал` / `传送门`, `[To]` / `К` / `前往`, `[Pair]` / `Пара` / `配对`, Away / `Авей` / `异界` (EN+RU+ZH keywords) |
 | **Bind on create** | `[Multi]` sticky until sign break; survives restart |
 | **Dial button** | Button by a random `[Multi]` sign rebinds destination (club peers first) |
-| **Landing** | Cross-server arrivals stand on the return portal plate when known |
+| **Landing** | Cross-server arrivals stand **in front of** the return portal when known |
+| **Guest home** | No return portal → local Random MULTI is home for that UUID (`travel.guest-home-seconds`) |
 | **Travel claim** | Leaf servers without local federation claim pending landings from the hub over HTTPS |
-| **Local wool portals** | ColorPortals-style ring TP on the same server |
+| **Away** | Same-server biome pair; origin-material exit ring; not on the public map |
+| **Closed frames** | Any size up to `portals.max-frame-radius`; open ring drops matter immediately |
+| **Nether fill** | Real animated portal sheet in the opening (no Nether transfer) |
+| **Local wool portals** | ColorPortals-style ring TP on the same server; any closed one-color wool ring; purple sheet, walk in, no plate |
+| **Type / create gates** | `portals.types.*` on/off; `portals.create: everyone\|admin` |
 | **Scanners** | MineScan + Cornbread + Slowstack (hub API key) → local SQLite score — [SCANNERS.md](SCANNERS.md) |
 | **Public catalog** | Auto-join `https://mp.mvse.ws/mvp/v1` (HTTPS) — [REGISTRY.md](REGISTRY.md) |
 | **Catalog share** | Gossip on by default (`catalog-share.enabled`) |
@@ -106,10 +113,12 @@ scanner:
 /mvp ready [off]                     # one-way consent
 /mvp lang en|de|ru|zh                # server fallback language
 /mvp local list | import-colorportals
-/mvp settings                        # map / guests / inventory summary
+/mvp settings                        # map / guests / inventory / create / types
 /mvp settings map on|off|auto
 /mvp settings guests on|off
 /mvp settings export|import on|off   # inventory transfer (alias: /mvp items …)
+/mvp settings create everyone|admin  # who may build portals
+/mvp settings type away|wool|multi|pair|to on|off
 /mvp update                          # download jar to plugins/update/ (admin)
 /mvp scanner                         # public pool status
 /mvp ingress | deny | rep            # inbound limits
@@ -118,7 +127,7 @@ scanner:
 /mvp registry …                      # hub diagnostics only
 ```
 
-**Player UX (no command):** pressure plate travels; a **button** next to a random `[Multi]` sign turns the dial (rebind).
+**Player UX (no command):** walk into the opening (plate optional); a **button** next to a random `[Multi]` sign turns the dial (rebind).
 
 ---
 
@@ -159,10 +168,27 @@ scanner:
     enabled: true           # pull candidates from the public hub before scanners
 
 open-network:
-  everyone-can-create: true
+  everyone-can-create: true          # legacy; prefer portals.create
   accept-inbound: true               # /mvp settings guests
   default-export-inventory: false    # /mvp settings export
   default-import-inventory: false    # /mvp settings import
+
+portals:
+  max-frame-radius: 24
+  create: everyone                   # everyone | admin
+  types:
+    away: true
+    wool: true
+    multi: true
+    pair: true
+    to: true
+
+away:
+  require-biome-frame: true
+  auto-build-return: true
+
+travel:
+  guest-home-seconds: 3600           # home overlay when dest has no return
 
 ready:
   confirm: false            # if true, players need /mvp ready for one-way hops
@@ -213,7 +239,7 @@ Lightest: `[Pair]` only or local wool only. Heaviest: many `[Multi]` + matter + 
 - Soft APIs: Via*, Geyser, Floodgate (reflection)
 - **Hub optional:** `mp.mvse.ws` outages do not disable the plugin. Catalog push/pull cools down; `[Multi]` binds fall back to public scanners + local SQLite; sticky Transfer still works. When the hub returns, share resumes automatically.
 
-Deeper: [ARCHITECTURE.md](ARCHITECTURE.md) · hub: [REGISTRY.md](REGISTRY.md).
+Deeper: [CONCEPTS.md](CONCEPTS.md) (intended behavior) · [ARCHITECTURE.md](ARCHITECTURE.md) · hub: [REGISTRY.md](REGISTRY.md).
 
 ---
 
@@ -226,7 +252,7 @@ JDK **21** + Gradle:
 # → build/libs/MultiversePortals-<version>.jar
 ```
 
-Current release: **1.1.16** · site / jar: [https://mp.mvse.ws/](https://mp.mvse.ws/)
+Current release: **1.2.17** · site / jar: [https://mp.mvse.ws/](https://mp.mvse.ws/)
 
 ---
 
@@ -241,7 +267,8 @@ Current release: **1.1.16** · site / jar: [https://mp.mvse.ws/](https://mp.mvse
 
 | Item | Notes |
 |------|--------|
-| **Balanced player flow** | Soft-rank `[Multi]` candidates by origin vs dest online (`scanner.flow-balance.*`). Busy origins prefer quieter dests; quiet origins prefer a moderate band; large soft penalty for mega online; small empty penalty. Club/Geyser tiers unchanged. Ops: `/mvp bindpreview` shows `online` + `flowScore`; A/B via `enabled: false` + `/mvp reload`. |
+| **Arrival in front** | Landing is in front of the frame. Standing on the **lintel / ring** does not start travel — only the opening or a plate. |
+| **Hop records** | Each hop is a row: player, from, to, `OK`/`BOUNCED`/`REFUSED`. Hub `GET /mvp/v1/reputation` → `events`. Bind soft-ranks dests from those outcomes (`hopScore` in `/mvp bindpreview`). Hub down does not block travel or bind (2s pull + cooldown + local scanners). |
 | **Hub transfer score** | Central `registry_scanner_hosts.score` from Transfer outcomes: ARRIVED `+transfer-success-score` (default 20), bounce `−transfer-fail-score` (default 40). SLP probes refresh status only (`probe-affects-score: false`). |
 | **Dial recent exclude** | Button / Multi bind skips hosts chosen in the last `dial-recent-exclude-seconds` (default 300) so the dial does not flip hub ↔ one peer. Soft-fallback if the fresh pool is empty. Faster binds: `flow-balance.live-ok-band` (default 2), merge hub `probe_cache` into the candidate pool. |
 | **Club-then-public bind** | Multi/dial always pulls central catalog + hub-pool first. Probes MVP club peers as their own phase; nearby-duplicate / recent-exclude skip a host and continue. After the club tier is exhausted, bind falls through to public scanners — duplicate reuse is last-resort only when no other live target exists. |

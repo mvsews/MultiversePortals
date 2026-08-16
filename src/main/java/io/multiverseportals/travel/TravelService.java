@@ -7,7 +7,9 @@ import io.multiverseportals.db.Database;
 import io.multiverseportals.db.RegistryDatabase;
 import io.multiverseportals.federation.PeerClient;
 import io.multiverseportals.model.*;
+import io.multiverseportals.away.AwayFrameBuilder;
 import io.multiverseportals.compat.BedrockPlayers;
+import io.multiverseportals.portal.FrameDetector;
 import io.multiverseportals.portal.PortalEffects;
 import io.multiverseportals.portal.PortalService;
 import io.multiverseportals.scanner.ServerProbe;
@@ -16,8 +18,10 @@ import io.multiverseportals.util.ShapeHasher;
 import net.kyori.adventure.text.minimessage.MiniMessage;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
+import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.block.Block;
+import org.bukkit.block.BlockFace;
 import org.bukkit.entity.Player;
 
 import java.util.ArrayList;
@@ -76,26 +80,45 @@ public final class TravelService {
             player.sendMessage(mm.deserialize(config.prefix(player) + config.message(player, "no-permission-travel")));
             return;
         }
-        PortalEffects effects = plugin.portalEffects();
-        if (effects == null) {
-            tryEnter(player, portal);
+        if (portal.status() == PortalStatus.BROKEN_LOCAL
+                || portal.status() == PortalStatus.BROKEN_REMOTE) {
+            player.sendMessage(mm.deserialize(config.prefix(player) + config.message(player, "frame-open")));
             return;
         }
 
-        if (portal.type() == PortalType.PAIR) {
-            if (!portal.isTravelReady() || portal.status() != PortalStatus.ACTIVE) {
+        Portal going = overlayGuestHome(player, portal);
+        if (!config.portalKindEnabled(going)) {
+            player.sendMessage(mm.deserialize(config.prefix(player)
+                    + config.message(player, "type-disabled").replace("%type%", config.portalKindKey(going))));
+            return;
+        }
+        if (going.type() == PortalType.AWAY) {
+            if (plugin.biomePortalService() != null) {
+                plugin.biomePortalService().travel(player, going);
+            }
+            return;
+        }
+
+        PortalEffects effects = plugin.portalEffects();
+        if (effects == null) {
+            tryEnter(player, going);
+            return;
+        }
+
+        if (going.type() == PortalType.PAIR) {
+            if (!going.isTravelReady() || going.status() != PortalStatus.ACTIVE) {
                 player.sendMessage(mm.deserialize(config.prefix(player) + config.message(player, "pair-broken")));
                 return;
             }
         } else {
-            if (portal.status() == PortalStatus.BINDING) {
+            if (going.status() == PortalStatus.BINDING) {
                 player.sendMessage(mm.deserialize(config.prefix(player) + config.message(player, "bind-wait")));
                 return;
             }
-            if (portal.status() == PortalStatus.BIND_FAILED || !portal.hasBoundDestination()) {
+            if (going.status() == PortalStatus.BIND_FAILED || !going.hasBoundDestination()) {
                 player.sendMessage(mm.deserialize(config.prefix(player) + config.message(player, "bind-not-ready")));
                 if (plugin.portalBindService() != null) {
-                    plugin.portalBindService().retryBind(portal);
+                    plugin.portalBindService().retryBind(going);
                 }
                 return;
             }
@@ -107,18 +130,17 @@ public final class TravelService {
 
         UUID uuid = player.getUniqueId();
         if (sessions.containsKey(uuid) || effects.isCharging(uuid)) {
-            player.sendMessage(mm.deserialize(config.prefix(player) + config.message(player, "searching-hold")));
             return;
         }
 
         // Sticky MULTI: check destination while charge animation runs (~5s)
-        if (portal.type() == PortalType.MULTI && portal.hasBoundDestination()) {
+        if (going.type() == PortalType.MULTI && going.hasBoundDestination()) {
             player.sendMessage(mm.deserialize(config.prefix(player) + config.message(player, "checking-server")));
-            ChargeSession session = new ChargeSession(portal, plate);
+            ChargeSession session = new ChargeSession(going, plate);
             sessions.put(uuid, session);
-            effects.chargeAndHold(player, portal, plate, this::onMinChargeDone);
+            effects.chargeAndHold(player, going, plate, this::onMinChargeDone);
             Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
-                ResolveResult result = resolveBoundDestination(player, portal);
+                ResolveResult result = resolveBoundDestination(player, going);
                 Bukkit.getScheduler().runTask(plugin, () -> {
                     if (!player.isOnline()) {
                         sessions.remove(player.getUniqueId());
@@ -133,8 +155,8 @@ public final class TravelService {
                                 .replace("%port%", String.valueOf(result.port()))));
                         PortalEffects fx = plugin.portalEffects();
                         if (fx != null) {
-                            String label = portal.boundVersion() != null && !portal.boundVersion().isBlank()
-                                    ? portal.boundVersion().replace('\n', ' ').trim()
+                            String label = going.boundVersion() != null && !going.boundVersion().isBlank()
+                                    ? going.boundVersion().replace('\n', ' ').trim()
                                     : (result.serverId() != null
                                     && !result.serverId().isBlank()
                                     && !result.serverId().startsWith("bound:")
@@ -152,13 +174,51 @@ public final class TravelService {
             return;
         }
 
-        ChargeSession session = new ChargeSession(portal, plate);
+        ChargeSession session = new ChargeSession(going, plate);
         sessions.put(uuid, session);
 
         player.sendMessage(mm.deserialize(config.prefix(player) + config.message(player, "plate-triggered")));
         player.sendMessage(mm.deserialize(config.prefix(player) + config.message(player, "searching-server")));
-        effects.chargeAndHold(player, portal, plate, this::onMinChargeDone);
-        startSearchLoop(player, portal);
+        effects.chargeAndHold(player, going, plate, this::onMinChargeDone);
+        startSearchLoop(player, going);
+    }
+
+    /**
+     * If this player arrived without a true return portal, the landing MULTI acts as home
+     * back to origin for {@code travel.guest-home-seconds}.
+     */
+    private Portal overlayGuestHome(Player player, Portal portal) {
+        if (player == null || portal == null || config.guestHomeSeconds() <= 0) {
+            return portal;
+        }
+        var opt = db.findGuestHome(player.getUniqueId());
+        if (opt.isEmpty()) {
+            return portal;
+        }
+        Database.GuestHome home = opt.get();
+        if (System.currentTimeMillis() > home.expiresAt()) {
+            db.deleteGuestHome(player.getUniqueId());
+            return portal;
+        }
+        if (!portal.id().equals(home.portalId()) || home.destHost() == null || home.destHost().isBlank()) {
+            return portal;
+        }
+        Portal shadow = new Portal(
+                portal.id(),
+                PortalType.MULTI,
+                PortalStatus.ACTIVE,
+                portal.frame(),
+                "home",
+                portal.creator()
+        );
+        shadow.setBoundHost(home.destHost());
+        shadow.setBoundPort(home.destPort() > 0 ? home.destPort() : home.destJavaPort());
+        shadow.setBoundJavaPort(home.destJavaPort() > 0 ? home.destJavaPort() : home.destPort());
+        shadow.setBoundDestPortalId(home.destPortalId());
+        shadow.setBoundVersion(home.destServer() != null ? home.destServer() : home.destHost());
+        player.sendMessage(mm.deserialize(config.prefix(player) + config.message(player, "guest-home-travel")
+                .replace("%from%", home.destServer() != null ? home.destServer() : home.destHost())));
+        return shadow;
     }
 
     private void onMinChargeDone(Player player) {
@@ -170,8 +230,6 @@ public final class TravelService {
         ResolveResult r = session.result.get();
         if (r != null && r.ok()) {
             finishOrAbort(player, session, r);
-        } else {
-            player.sendMessage(mm.deserialize(config.prefix(player) + config.message(player, "searching-hold")));
         }
     }
 
@@ -211,7 +269,9 @@ public final class TravelService {
                     if (!player.isOnline() || !sessions.containsKey(player.getUniqueId())) {
                         return;
                     }
-                    player.sendActionBar(mm.deserialize(config.message(player, "searching-hold")));
+                    String dest = PortalEffects.destinationLabel(portal);
+                    player.sendActionBar(mm.deserialize(config.message(player, "charge-hold")
+                            .replace("%dest%", dest == null || dest.isBlank() ? "…" : dest)));
                     if (r == 1 || r % 3 == 0) {
                         String msg = tip != null && !tip.isBlank() ? tip : config.message(player, "searching-still")
                                 .replace("%n%", String.valueOf(r));
@@ -285,7 +345,8 @@ public final class TravelService {
             player.sendMessage(mm.deserialize(config.prefix(player) + result.failMessage()));
             return;
         }
-        if (!config.scannerConfirmBeforeTransfer()) {
+        // Sticky bind already probed during the countdown — go, don't "find a world" again.
+        if (!config.scannerConfirmBeforeTransfer() || session.portal.hasBoundDestination()) {
             commitDepart(player, session, result);
             return;
         }
@@ -306,7 +367,9 @@ public final class TravelService {
                         // already recorded inside confirmDestination
                     }
                     player.sendMessage(mm.deserialize(config.prefix(player) + config.message(player, "dest-unstable")));
-                    player.sendActionBar(mm.deserialize(config.message(player, "searching-hold")));
+                    String dest = PortalEffects.destinationLabel(live.portal);
+                    player.sendActionBar(mm.deserialize(config.message(player, "charge-hold")
+                            .replace("%dest%", dest == null || dest.isBlank() ? "…" : dest)));
                     live.result.set(null);
                     startSearchLoop(player, live.portal);
                     return;
@@ -323,8 +386,8 @@ public final class TravelService {
             effects.signalDepart(player);
         }
         pendingTransfers.put(player.getUniqueId(), new PendingTransfer(
-                result.host(), result.javaPort(), session.portal.id(), System.currentTimeMillis(), null,
-                pendingLabel(session.portal, result.host())));
+                result.host(), result.javaPort(), result.serverId(), session.portal.id(),
+                System.currentTimeMillis(), null, pendingLabel(session.portal, result.host())));
         depart(player, session.portal, result.host(), result.port(), result.serverId(),
                 result.toPortalId(), result.type(), result.returnCapable());
     }
@@ -432,6 +495,7 @@ public final class TravelService {
                     null, null, null, null, null, null);
         }
         reportBounceFailure(player, p, age);
+        notePeer(player, PeerEdge.Kind.FAILED, p.toServerId, p.host, p.javaPort);
         plugin.getLogger().warning("Bounce-back from " + p.host + ":" + p.javaPort
                 + " after " + (age / 1000) + "s — blacklisted for new binds (sticky portal kept)");
         if (p.portalId != null && plugin.portalBindService() != null) {
@@ -585,11 +649,13 @@ public final class TravelService {
         if (config.isOwnPublicHost(host)) {
             plugin.getLogger().warning("Bound destination is this server (" + host
                     + ") — clearing sticky and rebinding");
-            portal.clearBound();
-            portal.setStatus(PortalStatus.BINDING);
-            db.savePortal(portal);
-            if (plugin.portalBindService() != null) {
-                plugin.portalBindService().retryBind(portal);
+            if (!"home".equals(portal.name())) {
+                portal.clearBound();
+                portal.setStatus(PortalStatus.BINDING);
+                db.savePortal(portal);
+                if (plugin.portalBindService() != null) {
+                    plugin.portalBindService().retryBind(portal);
+                }
             }
             return ResolveResult.fail(config.message(player, "bind-not-ready"));
         }
@@ -613,6 +679,10 @@ public final class TravelService {
             }
             // Sticky: keep bound_* — when dest wakes up, next plate step works again
             return ResolveResult.fail(config.message(player, "bound-inactive").replace("%host%", host));
+        }
+        portal.setBoundLastOkAt(System.currentTimeMillis());
+        if (!"home".equals(portal.name())) {
+            db.savePortal(portal);
         }
         final byte[] favicon = slp.hasFavicon() ? slp.faviconPng() : null;
 
@@ -842,8 +912,8 @@ public final class TravelService {
                 }
                 java.util.function.Consumer<ResolveResult> go = dest -> {
                     pendingTransfers.put(player.getUniqueId(), new PendingTransfer(
-                            dest.host(), dest.javaPort(), portal.id(), System.currentTimeMillis(), null,
-                            pendingLabel(portal, dest.host())));
+                            dest.host(), dest.javaPort(), dest.serverId(), portal.id(),
+                            System.currentTimeMillis(), null, pendingLabel(portal, dest.host())));
                     depart(player, portal, dest.host(), dest.port(), dest.serverId(),
                             dest.toPortalId(), dest.type(), dest.returnCapable());
                 };
@@ -1058,13 +1128,15 @@ public final class TravelService {
         PendingTransfer prev = pendingTransfers.get(player.getUniqueId());
         pendingTransfers.put(player.getUniqueId(), new PendingTransfer(
                 host,
-                // java port for memory key — prefer sticky java port from previous pending if set
                 prev != null && prev.javaPort > 0 ? prev.javaPort : port,
+                toServerId,
                 portal.id(),
                 System.currentTimeMillis(),
                 sessionId,
                 pendingLabel(portal, host)
         ));
+        scheduleDepartSuccess(player.getUniqueId(), sessionId, toServerId, host,
+                prev != null && prev.javaPort > 0 ? prev.javaPort : port);
 
         if (registry != null && registry.enabled()) {
             registry.saveTravel(
@@ -1120,6 +1192,9 @@ public final class TravelService {
         if (!config.useTransferPacket()) {
             player.kick(mm.deserialize("<yellow>Зайди на</yellow> <white>" + host + ":" + port + "</white>"));
             return;
+        }
+        if (plugin.portalMatter() != null) {
+            plugin.portalMatter().ejectFromSheet(player);
         }
         // Bedrock (Geyser/Floodgate): Paper transfer packet is often a no-op — use Geyser API first.
         if (tryGeyserTransfer(player, host, port)) {
@@ -1254,6 +1329,7 @@ public final class TravelService {
         if (!config.acceptInbound()) {
             plugin.getLogger().info("Inbound closed — kicking " + player.getName()
                     + " from " + t.fromServer());
+            notePeer(player, PeerEdge.Kind.REJECTED, t.fromServer(), null, 0);
             player.kick(mm.deserialize(config.prefix(player) + config.message(player, "guests-closed")));
             return;
         }
@@ -1261,6 +1337,7 @@ public final class TravelService {
         IngressPolicy.DenyReason deny = ingress.check(player, t.score());
         if (deny != IngressPolicy.DenyReason.OK) {
             plugin.getLogger().info("Ingress rejected " + player.getName() + ": " + deny);
+            notePeer(player, PeerEdge.Kind.REJECTED, t.fromServer(), null, 0);
             player.kick(mm.deserialize(config.prefix(player) + ingress.reasonMessage(player, deny)));
             return;
         }
@@ -1272,7 +1349,7 @@ public final class TravelService {
                 if (loc == null) {
                     return false;
                 }
-                player.teleportAsync(loc);
+                teleportArrival(player, loc);
                 String key = t.landingReturn() ? "arrived-at-return" : "arrived-placed-at-portal";
                 player.sendMessage(mm.deserialize(config.prefix(player) + config.message(player, key)
                         .replace("%from%", t.fromServer() == null ? "?" : t.fromServer())));
@@ -1294,16 +1371,19 @@ public final class TravelService {
         if (t.score() != null) {
             db.upsertRemoteScore(player.getUniqueId(), t.fromServer(), t.score());
         }
+        notePeer(player, PeerEdge.Kind.ARRIVED, t.fromServer(), null, 0);
     }
 
     private void applyLocalTravel(Player player, TravelSession t) {
         if (!config.acceptInbound()) {
             plugin.getLogger().info("Inbound closed — kicking " + player.getName()
                     + " from " + t.fromServer());
+            notePeer(player, PeerEdge.Kind.REJECTED, t.fromServer(), null, 0);
             player.kick(mm.deserialize(config.prefix(player) + config.message(player, "guests-closed")));
             return;
         }
         ingress.recordArrival();
+        notePeer(player, PeerEdge.Kind.ARRIVED, t.fromServer(), null, 0);
         boolean landingReturn = t.scoreSnapshotJson() != null
                 && t.scoreSnapshotJson().contains("\"landingReturn\":true");
         if (t.toPortalId() != null) {
@@ -1312,7 +1392,7 @@ public final class TravelService {
                 if (loc == null) {
                     return false;
                 }
-                player.teleportAsync(loc);
+                teleportArrival(player, loc);
                 String key = landingReturn ? "arrived-at-return" : "arrived-placed-at-portal";
                 player.sendMessage(mm.deserialize(config.prefix(player) + config.message(player, key)
                         .replace("%from%", t.fromServer() == null ? "?" : t.fromServer())));
@@ -1496,6 +1576,9 @@ public final class TravelService {
             String playerUuid = body.get("playerUuid").getAsString();
             if (playerUuid != null && !playerUuid.isBlank()) {
                 rememberInboundLanding(playerUuid, fromServer, landing.id(), isReturn);
+                if (!isReturn && config.guestHomeSeconds() > 0) {
+                    saveGuestHome(playerUuid, landing, fromServer, fromHost, fromPort, fromPortalId);
+                }
             }
         }
         plugin.getLogger().info("Travel offer: land at " + landing.id()
@@ -1556,6 +1639,32 @@ public final class TravelService {
         }
     }
 
+    private void saveGuestHome(
+            String playerUuid,
+            Portal landing,
+            String fromServer,
+            String fromHost,
+            int fromPort,
+            String fromPortalId
+    ) {
+        try {
+            UUID uuid = UUID.fromString(playerUuid);
+            long exp = System.currentTimeMillis() + config.guestHomeSeconds() * 1000L;
+            db.saveGuestHome(new Database.GuestHome(
+                    uuid,
+                    landing.id(),
+                    fromHost,
+                    fromPort,
+                    fromPort,
+                    fromServer,
+                    fromPortalId,
+                    exp
+            ));
+        } catch (IllegalArgumentException e) {
+            plugin.getLogger().warning("saveGuestHome bad uuid: " + playerUuid);
+        }
+    }
+
     private Optional<Portal> findLocalReturnPortal(String fromServer, String fromHost, int fromPort) {
         Portal best = null;
         int bestScore = -1;
@@ -1609,8 +1718,8 @@ public final class TravelService {
     }
 
     /**
-     * Stand on the portal's pressure plate (sign is usually 2 blocks above).
-     * Join grace in PortalListener prevents an instant reverse transfer.
+     * Stand in front of the opening, not on the plate and not in the purple sheet.
+     * Standing on the portal after arrival used to start a reverse hop.
      */
     private Location arrivalStandLocation(Portal portal) {
         if (portal == null || portal.frame() == null) {
@@ -1621,13 +1730,24 @@ public final class TravelService {
             return null;
         }
         PortalFrame f = portal.frame();
+        Block sign = world.getBlockAt(f.x(), f.y(), f.z());
+        BlockFace face = FrameDetector.facingOf(sign);
+        Location loc = findArrivalPlate(world, f);
+        if (loc == null) {
+            loc = f.toLocation(world);
+            loc.add(0.5, -1.9, 0.5);
+        }
+        loc.add(face.getModX() * 1.5, 0, face.getModZ() * 1.5);
+        loc.setYaw(AwayFrameBuilder.yawOf(face));
+        return pushOutOfPortal(loc, face);
+    }
+
+    private static Location findArrivalPlate(World world, PortalFrame f) {
         int[] dys = { -2, -1, -3, 0 };
         for (int dy : dys) {
             Block b = world.getBlockAt(f.x(), f.y() + dy, f.z());
             if (ShapeHasher.isPressurePlate(b.getType())) {
-                Location loc = new Location(world, f.x() + 0.5, f.y() + dy + 0.05, f.z() + 0.5);
-                loc.setYaw(f.yaw());
-                return loc;
+                return new Location(world, f.x() + 0.5, f.y() + dy + 0.05, f.z() + 0.5);
             }
         }
         for (int dx = -1; dx <= 1; dx++) {
@@ -1638,20 +1758,38 @@ public final class TravelService {
                 for (int dy : dys) {
                     Block b = world.getBlockAt(f.x() + dx, f.y() + dy, f.z() + dz);
                     if (ShapeHasher.isPressurePlate(b.getType())) {
-                        Location loc = new Location(
+                        return new Location(
                                 world, f.x() + dx + 0.5, f.y() + dy + 0.05, f.z() + dz + 0.5);
-                        loc.setYaw(f.yaw());
-                        return loc;
                     }
                 }
             }
         }
-        // No plate found — stand in front of the sign as before.
-        Location loc = f.toLocation(world);
-        float yaw = loc.getYaw();
-        double rad = Math.toRadians(yaw);
-        loc.add(-Math.sin(rad) * 1.5, 0.1, Math.cos(rad) * 1.5);
+        return null;
+    }
+
+    private static Location pushOutOfPortal(Location loc, BlockFace face) {
+        for (int i = 0; i < 4; i++) {
+            Block feet = loc.getBlock();
+            Block head = loc.clone().add(0, 1, 0).getBlock();
+            Block below = feet.getRelative(BlockFace.DOWN);
+            boolean inside = feet.getType() == Material.NETHER_PORTAL
+                    || head.getType() == Material.NETHER_PORTAL
+                    || ShapeHasher.isPressurePlate(feet.getType())
+                    || ShapeHasher.isPressurePlate(below.getType());
+            if (!inside) {
+                break;
+            }
+            loc.add(face.getModX(), 0, face.getModZ());
+        }
         return loc;
+    }
+
+    private void teleportArrival(Player player, Location loc) {
+        player.teleportAsync(loc).thenAccept(ok -> Bukkit.getScheduler().runTask(plugin, () -> {
+            if (plugin.portalListener() != null) {
+                plugin.portalListener().syncOccupancy(player);
+            }
+        }));
     }
 
     /**
@@ -1676,6 +1814,9 @@ public final class TravelService {
             if (p.status() == PortalStatus.ACTIVE) {
                 score += 10;
             }
+            if (p.type() == PortalType.MULTI && io.multiverseportals.portal.PortalBindService.fixedEndpoint(p).isEmpty()) {
+                score += 20;
+            }
             if (p.hasBoundDestination()) {
                 score += 5;
             }
@@ -1688,6 +1829,44 @@ public final class TravelService {
             }
         }
         return Optional.ofNullable(best);
+    }
+
+    private void scheduleDepartSuccess(UUID uuid, String sessionId, String toServerId, String host, int javaPort) {
+        long ticks = 20L * Math.max(30, config.scannerBounceBackSeconds()) + 100L;
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            PendingTransfer still = pendingTransfers.get(uuid);
+            if (still == null || sessionId == null || !sessionId.equals(still.sessionId)) {
+                return;
+            }
+            pendingTransfers.remove(uuid);
+            Player p = Bukkit.getPlayer(uuid);
+            if (p != null && p.isOnline()) {
+                return;
+            }
+            notePeer(uuid, null, PeerEdge.Kind.DEPARTED, toServerId, host, javaPort);
+        }, ticks);
+    }
+
+    private void notePeer(Player player, PeerEdge.Kind kind, String serverId, String host, int port) {
+        UUID uuid = player == null ? null : player.getUniqueId();
+        String name = player == null ? null : player.getName();
+        notePeer(uuid, name, kind, serverId, host, port);
+    }
+
+    private void notePeer(UUID uuid, String name, PeerEdge.Kind kind, String serverId, String host, int port) {
+        if (kind == null) {
+            return;
+        }
+        boolean hasId = serverId != null && !serverId.isBlank();
+        boolean hasHost = host != null && !host.isBlank();
+        if (!hasId && !hasHost) {
+            return;
+        }
+        db.recordPeerEvent(kind, serverId, host, port,
+                uuid == null ? null : uuid.toString(), name);
+        if (plugin.catalogShareService() != null) {
+            plugin.catalogShareService().pushNowAsync();
+        }
     }
 
     private static boolean isEmpty(Player player) {
@@ -1714,6 +1893,7 @@ public final class TravelService {
     private record PendingTransfer(
             String host,
             int javaPort,
+            String toServerId,
             String portalId,
             long atMs,
             String sessionId,

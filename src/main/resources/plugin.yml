@@ -15,7 +15,7 @@ permissions:
   multiverseportals.use:
     default: true
   multiverseportals.create:
-    description: Create portals with signs
+    description: Create portals with signs (ignored when portals.create is everyone; admin mode uses multiverseportals.admin)
     default: true
   multiverseportals.travel:
     default: true

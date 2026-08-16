@@ -220,6 +220,20 @@ public final class CatalogShareService {
         out.add("servers", servers);
         out.add("portals", portals);
         out.add("players", computePlayerTotals(servers, portals));
+        JsonArray peerRep = db.peerReputationJson(200);
+        if (peerRep.size() > 0) {
+            out.add("peerReputation", peerRep);
+        }
+        JsonArray hops = db.hopEventsJson(80);
+        if (hops.size() > 0) {
+            out.add("hopEvents", hops);
+        }
+        if (registry != null && registry.ready()) {
+            JsonArray destHops = registry.destHopStatsJson(200);
+            if (destHops.size() > 0) {
+                out.add("destHops", destHops);
+            }
+        }
         return out;
     }
 
@@ -245,7 +259,7 @@ public final class CatalogShareService {
                 byHost.put(hostKey(host, port), n);
             }
         }
-        if (registry != null && registry.enabled()) {
+        if (registry != null && registry.ready()) {
             for (JsonElement el : portals) {
                 if (!el.isJsonObject()) {
                     continue;
@@ -341,29 +355,38 @@ public final class CatalogShareService {
         self.addProperty("onlinePlayers", plugin.getServer().getOnlinePlayers().size());
         self.addProperty("maxPlayers", plugin.getServer().getMaxPlayers());
         var caps = io.multiverseportals.compat.ServerCaps.detect(config);
+        String mvpVer = caps.mvpVersion();
+        if (mvpVer == null || mvpVer.isBlank()) {
+            try {
+                mvpVer = plugin.getPluginMeta().getVersion();
+            } catch (Throwable ignored) {
+                mvpVer = "";
+            }
+        }
+        if (!mvpVer.isBlank()) {
+            self.addProperty("mvpVersion", mvpVer);
+        }
         if (caps.bedrockPort() > 0) {
             self.addProperty("bedrockPort", caps.bedrockPort());
         }
-        if (caps.hasGeyser() || caps.hasFloodgate()) {
-            JsonObject c = self.has("caps") && self.get("caps").isJsonObject()
-                    ? self.getAsJsonObject("caps") : new JsonObject();
-            c.addProperty("geyser", caps.hasGeyser());
-            c.addProperty("floodgate", caps.hasFloodgate());
-            if (caps.bedrockPort() > 0) {
-                c.addProperty("bedrockPort", caps.bedrockPort());
-            }
-            if (caps.bedrockProtocol() > 0) {
-                c.addProperty("bedrockProtocol", caps.bedrockProtocol());
-            }
-            if (!caps.bedrockVersion().isBlank()) {
-                c.addProperty("bedrockVersion", caps.bedrockVersion());
-            }
-            c.addProperty("acceptBedrock", caps.acceptBedrock());
-            if (!caps.mvpVersion().isBlank()) {
-                c.addProperty("mvpVersion", caps.mvpVersion());
-            }
-            self.add("caps", c);
+        JsonObject c = self.has("caps") && self.get("caps").isJsonObject()
+                ? self.getAsJsonObject("caps") : new JsonObject();
+        if (!mvpVer.isBlank()) {
+            c.addProperty("mvpVersion", mvpVer);
         }
+        c.addProperty("geyser", caps.hasGeyser());
+        c.addProperty("floodgate", caps.hasFloodgate());
+        if (caps.bedrockPort() > 0) {
+            c.addProperty("bedrockPort", caps.bedrockPort());
+        }
+        if (caps.bedrockProtocol() > 0) {
+            c.addProperty("bedrockProtocol", caps.bedrockProtocol());
+        }
+        if (!caps.bedrockVersion().isBlank()) {
+            c.addProperty("bedrockVersion", caps.bedrockVersion());
+        }
+        c.addProperty("acceptBedrock", caps.acceptBedrock());
+        self.add("caps", c);
         if (brand.hasIcon()) {
             self.addProperty("hasIcon", true);
             self.addProperty("iconPngBase64", brand.iconBase64());
@@ -380,7 +403,7 @@ public final class CatalogShareService {
             return portals;
         }
         // Hub: full graph from MySQL. Peers: local portals so announce/export carries edges.
-        if (registry != null && registry.enabled()) {
+        if (registry != null && registry.ready()) {
             for (var rp : registry.listPortals(Math.max(50, config.catalogShareMaxEntries() * 4))) {
                 if (retainedServerIdsLower != null && !retainedServerIdsLower.isEmpty()) {
                     String sid = rp.serverId() == null ? "" : rp.serverId().toLowerCase(Locale.ROOT);
@@ -393,6 +416,9 @@ public final class CatalogShareService {
             return portals;
         }
         for (var p : db.listPortals()) {
+            if (p.type() == io.multiverseportals.model.PortalType.AWAY) {
+                continue;
+            }
             portals.add(localPortalToJson(p, Map.of()));
         }
         return portals;
@@ -509,6 +535,9 @@ public final class CatalogShareService {
     public JsonObject buildLivePortalsPayload() {
         JsonArray portals = new JsonArray();
         for (var p : db.listPortals()) {
+            if (p.type() == io.multiverseportals.model.PortalType.AWAY) {
+                continue;
+            }
             JsonObject o = new JsonObject();
             o.addProperty("portalId", p.id());
             o.addProperty("type", p.type().name());
@@ -567,7 +596,7 @@ public final class CatalogShareService {
     public JsonObject buildRegistryPortalsPayload(String serverId) {
         String sid = serverId == null || serverId.isBlank() ? config.serverId() : serverId;
         JsonArray portals = new JsonArray();
-        if (registry != null && registry.enabled()) {
+        if (registry != null && registry.ready()) {
             for (var rp : registry.listPortalsOnServer(sid)) {
                 JsonObject o = new JsonObject();
                 o.addProperty("portalId", rp.portalId());
@@ -637,10 +666,15 @@ public final class CatalogShareService {
         }
         int n = ingestServers(body, "gossip");
         int portals = ingestPortals(body);
+        int reps = ingestPeerReputation(body);
+        int hops = ingestHopEvents(body);
+        ingestDestHops(body);
         JsonObject out = new JsonObject();
         out.addProperty("ok", true);
         out.addProperty("upserted", n);
         out.addProperty("portals", portals);
+        out.addProperty("peerReputation", reps);
+        out.addProperty("hopEvents", hops);
         return out;
     }
 
@@ -662,6 +696,77 @@ public final class CatalogShareService {
             plugin.getLogger().info("Catalog portals from " + owner + ": " + n);
         }
         return n;
+    }
+
+    public int ingestPeerReputation(JsonObject body) {
+        if (body == null || !config.catalogShareHub()
+                || registry == null || !registry.enabled()) {
+            return 0;
+        }
+        if (!body.has("peerReputation") || !body.get("peerReputation").isJsonArray()) {
+            return 0;
+        }
+        String owner = str(body, "serverId");
+        if (owner == null || owner.isBlank() || owner.equalsIgnoreCase(config.serverId())) {
+            return 0;
+        }
+        int n = registry.ingestPeerReputation(owner, body.getAsJsonArray("peerReputation"));
+        if (n > 0) {
+            plugin.getLogger().info("Peer reputation from " + owner + ": " + n);
+        }
+        return n;
+    }
+
+    public int ingestHopEvents(JsonObject body) {
+        if (body == null || !config.catalogShareHub()
+                || registry == null || !registry.ready()) {
+            return 0;
+        }
+        if (!body.has("hopEvents") || !body.get("hopEvents").isJsonArray()) {
+            return 0;
+        }
+        String owner = str(body, "serverId");
+        if (owner == null || owner.isBlank() || owner.equalsIgnoreCase(config.serverId())) {
+            return 0;
+        }
+        int n = registry.ingestHopEvents(owner, body.getAsJsonArray("hopEvents"));
+        if (n > 0) {
+            plugin.getLogger().info("Hop events from " + owner + ": " + n);
+        }
+        return n;
+    }
+
+    /** Hub also stores its own SQLite opinions so GET /reputation includes this server. */
+    private void ingestLocalPeerReputationIfHub() {
+        if (!config.catalogShareHub() || registry == null || !registry.enabled()) {
+            return;
+        }
+        JsonArray local = db.peerReputationJson(200);
+        if (local.size() > 0) {
+            registry.ingestPeerReputation(config.serverId(), local);
+        }
+        JsonArray hops = db.hopEventsJson(80);
+        if (hops.size() > 0) {
+            registry.ingestHopEvents(config.serverId(), hops);
+        }
+    }
+
+    /** Leaf cache of hub dest rollups for Multi bind. No-op if hub omitted destHops. */
+    public int ingestDestHops(JsonObject body) {
+        if (body == null) {
+            return 0;
+        }
+        JsonArray dests = null;
+        if (body.has("destHops") && body.get("destHops").isJsonArray()) {
+            dests = body.getAsJsonArray("destHops");
+        } else if (body.has("dests") && body.get("dests").isJsonArray()) {
+            dests = body.getAsJsonArray("dests");
+        }
+        if (dests == null || dests.isEmpty()) {
+            return 0;
+        }
+        db.upsertHubDestHops(dests);
+        return dests.size();
     }
 
     public int ingestServers(JsonObject body, String defaultSource) {
@@ -766,7 +871,7 @@ public final class CatalogShareService {
                 }
                 var brand = io.multiverseportals.util.ServerBranding.fromMotdAndFavicon(
                         info.motd(), info.faviconPng());
-                if (registry != null && registry.enabled()) {
+                if (registry != null && registry.ready()) {
                     registry.updateBranding(
                             serverId,
                             brand.name(),
@@ -782,10 +887,14 @@ public final class CatalogShareService {
     }
 
     private static io.multiverseportals.compat.ServerCaps capsFromAnnounce(JsonObject o, int bedrockPortFallback) {
+        String topVer = "";
+        if (o != null && o.has("mvpVersion") && !o.get("mvpVersion").isJsonNull()) {
+            topVer = o.get("mvpVersion").getAsString();
+        }
         if (o == null || !o.has("caps") || !o.get("caps").isJsonObject()) {
             int bed = bedrockPortFallback > 0 ? bedrockPortFallback : 0;
             return new io.multiverseportals.compat.ServerCaps(
-                    "", bed > 0, false, "", bed, 0, "", bed > 0,
+                    topVer == null ? "" : topVer, bed > 0, false, "", bed, 0, "", bed > 0,
                     false, 0, 0, 0, false, 0, false, false
             );
         }
@@ -797,6 +906,9 @@ public final class CatalogShareService {
         boolean acceptBed = c.has("acceptBedrock") ? c.get("acceptBedrock").getAsBoolean() : geyser;
         String mvpVer = c.has("mvpVersion") && !c.get("mvpVersion").isJsonNull()
                 ? c.get("mvpVersion").getAsString() : "";
+        if (mvpVer == null || mvpVer.isBlank()) {
+            mvpVer = topVer == null ? "" : topVer;
+        }
         String geyVer = c.has("geyserVersion") && !c.get("geyserVersion").isJsonNull()
                 ? c.get("geyserVersion").getAsString() : "";
         String bedVer = c.has("bedrockVersion") && !c.get("bedrockVersion").isJsonNull()
@@ -852,13 +964,23 @@ public final class CatalogShareService {
 
     /**
      * Blocking catalog pull used before Multi/dial bind so known_mvp / club peers are fresh.
+     * Official hub only, short timeout — hub down must not stall bind (scanners + local cache).
      */
     public void pullForBindBlocking() {
         if (!config.catalogShareEnabled() || !config.catalogSharePull()) {
             return;
         }
         try {
-            pullAll();
+            for (String base : catalogBootstrapTargets()) {
+                if (peerClient.isHubCoolingDown(base)) {
+                    continue;
+                }
+                peerClient.catalogExport(base, java.time.Duration.ofSeconds(2)).ifPresent(resp -> {
+                    ingestServers(resp, "hub");
+                    ingestPortals(resp);
+                    ingestDestHops(resp);
+                });
+            }
         } catch (Exception e) {
             plugin.getLogger().warning("Catalog pull-before-bind failed: "
                     + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
@@ -870,9 +992,11 @@ public final class CatalogShareService {
             peerClient.catalogExport(base).ifPresent(resp -> {
                 int n = ingestServers(resp, baseContainsBootstrap(base) ? "hub" : "gossip");
                 int portals = ingestPortals(resp);
-                if (n > 0 || portals > 0) {
+                int hops = ingestDestHops(resp);
+                if (n > 0 || portals > 0 || hops > 0) {
                     plugin.getLogger().info("Catalog pull from " + base + ": servers+" + n
-                            + (portals > 0 ? " portals+" + portals : ""));
+                            + (portals > 0 ? " portals+" + portals : "")
+                            + (hops > 0 ? " destHops+" + hops : ""));
                 }
             });
         }
@@ -909,6 +1033,7 @@ public final class CatalogShareService {
     }
 
     private boolean pushAllReturningOk() {
+        ingestLocalPeerReputationIfHub();
         JsonObject snap = buildExportPayload();
         int targets = 0;
         int ok = 0;
@@ -950,6 +1075,9 @@ public final class CatalogShareService {
      */
     public void pushNowAsync() {
         if (!config.catalogShareEnabled() || !config.catalogSharePush() || !config.shouldListPublicly()) {
+            return;
+        }
+        if (peerClient.officialHubUnavailable()) {
             return;
         }
         Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
@@ -1027,6 +1155,16 @@ public final class CatalogShareService {
         return false;
     }
 
+    private List<String> catalogBootstrapTargets() {
+        LinkedHashSet<String> urls = new LinkedHashSet<>();
+        for (String u : config.catalogShareBootstrapUrls()) {
+            if (u != null && !u.isBlank() && !"none".equalsIgnoreCase(u.trim())) {
+                urls.add(trimSlash(u));
+            }
+        }
+        return new ArrayList<>(urls);
+    }
+
     private List<String> catalogTargets(boolean forPull) {
         LinkedHashSet<String> urls = new LinkedHashSet<>();
         for (String u : config.catalogShareBootstrapUrls()) {
@@ -1035,7 +1173,7 @@ public final class CatalogShareService {
         for (String u : db.listKnownMvpFederationUrls(24)) {
             urls.add(trimSlash(u));
         }
-        if (registry != null && registry.enabled()) {
+        if (registry != null && registry.ready()) {
             for (RegistryServer rs : registry.listMultiTargets(config.registryStaleMs() * 3)) {
                 if (rs.federationUrl() != null && !rs.federationUrl().isBlank()) {
                     urls.add(trimSlash(rs.federationUrl()));
@@ -1124,6 +1262,9 @@ public final class CatalogShareService {
         }
         if (mc != null) {
             o.addProperty("mcVersion", mc);
+        }
+        if (caps != null && !caps.mvpVersion().isBlank()) {
+            o.addProperty("mvpVersion", caps.mvpVersion());
         }
         if (bed > 0) {
             o.addProperty("bedrockPort", bed);

@@ -42,7 +42,7 @@ Within each tier, **confirmed Geyser (Java + Bedrock)** ranks above Java-only wh
 
 Sticky bind stores both ports when Geyser was found (`javaPort` + Bedrock transfer port).
 
-### Travel (who stands on the plate later)
+### Travel (who walks through later)
 
 Platform is decided by the **traveler**, not the creator:
 

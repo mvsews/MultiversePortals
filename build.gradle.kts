@@ -3,7 +3,7 @@ plugins {
 }
 
 group = "io.multiverseportals"
-version = "1.1.16"
+version = "1.2.17"
 
 java {
     toolchain {
@@ -23,6 +23,7 @@ dependencies {
     implementation("com.mysql:mysql-connector-j:9.1.0")
     implementation("com.google.code.gson:gson:2.11.0")
 
+    testImplementation("io.papermc.paper:paper-api:1.21.4-R0.1-SNAPSHOT")
     testImplementation("org.junit.jupiter:junit-jupiter:5.11.4")
 }
 

@@ -98,8 +98,7 @@ public final class PortalEffects {
                     leavePlate(player, world);
                     return;
                 }
-                if (player.getLocation().distanceSquared(center) > 16.0) {
-                    player.sendActionBar(mm.deserialize(config.message(player, "charge-left-plate")));
+                if (leftOpening(player, portal, center)) {
                     world.playSound(player.getLocation(), Sound.BLOCK_FIRE_EXTINGUISH, 0.5f, 1.2f);
                     leavePlate(player, world);
                     return;
@@ -126,7 +125,7 @@ public final class PortalEffects {
                             .replace("%dest%", escapeMm(displayDest(destLabel[0])))
                             .replace("%sec%", String.valueOf(Math.max(1, left)))));
                 } else {
-                    player.sendActionBar(mm.deserialize(config.message(player, "searching-hold")
+                    player.sendActionBar(mm.deserialize(config.message(player, "charge-hold")
                             .replace("%dest%", escapeMm(displayDest(destLabel[0])))));
                     if (tick % 40 == 0) {
                         world.playSound(center, Sound.BLOCK_PORTAL_AMBIENT, 0.25f, 1.2f);
@@ -143,6 +142,19 @@ public final class PortalEffects {
         }.runTaskTimer(plugin, 0L, 1L);
 
         charging.put(uuid, task);
+    }
+
+    private boolean leftOpening(Player player, Portal portal, Location center) {
+        Location loc = player.getLocation();
+        if (plugin.portalService() != null) {
+            if (plugin.portalService().isInsideOpening(portal, loc)) {
+                return false;
+            }
+            if (plugin.portalService().isStandingOnFrame(portal, loc)) {
+                return true;
+            }
+        }
+        return loc.distanceSquared(center) > 16.0;
     }
 
     /** Update on-screen destination name while still charging (e.g. after probe). */

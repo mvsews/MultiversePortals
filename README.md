@@ -28,9 +28,21 @@
 
 A **Paper 1.21+** plugin that links independent Minecraft servers with portals — **no Bungee or Velocity**.
 
-Players build a portal from a **sign + pressure plate**. The game uses the vanilla **Transfer** packet (and Geyser for Bedrock). Your world can send players out **and** receive guests from the public network.
+Players build a portal from a **sign + closed frame**. A pressure plate is optional. The game uses the vanilla **Transfer** packet (and Geyser for Bedrock). Your world can send players out **and** receive guests from the public network.
 
-**In-game language:** `/mvp lang en|de|ru|zh`
+**What it lets you do:**
+
+- Jump between **independent Paper servers** without a proxy
+- Build **random `[Multi]`** portals that find a live world and stick to it
+- Point a portal **`[To]`** a specific IP or server, or **`[Pair]`** two of your worlds for a round-trip
+- Travel to **another overworld biome** with Away (Nether-style sticky pair, frame from this biome’s wood/sand/ice)
+- Use **local wool portals** on the same server (ColorPortals-style color + channel; any closed ring of one color)
+- Fill a **closed frame of any size** with the vanilla Nether portal sheet (packed rings that share a pillar stay separate)
+- Let **Bedrock** players through via Geyser
+- Land at a **home portal for an hour** if the other side has no return door
+- Let **everyone** build portals, or **admins only** — and turn each type on/off in config
+
+**In-game language:** `/mvp lang en|de|ru|zh` · [Changelog](CHANGELOG.md)
 
 ---
 
@@ -93,7 +105,7 @@ If you don’t have Paper yet and the machine has **Docker on Linux**, one comma
 docker run -d --name minecraft_mvp --network host -e EULA=TRUE -v mvp-data:/data mvsews/mvp && IP=$(curl -fsS https://api.ipify.org) && echo "Server ready — connect Java $IP:25565 | Bedrock $IP:19132"
 ```
 
-Wait a couple of minutes on first boot (Paper download + world gen). The command prints the IP to connect to. If you don’t set a name, one is generated for you (e.g. “Peppery Bridge”).
+Wait a couple of minutes on first boot (Paper download + world gen). The command prints the IP to connect to. If you don’t set a name, one is generated for you (e.g. “Peppery Bridge”). Each **container restart** pulls latest Geyser/Via* and MultiversePortals if https://mp.mvse.ws/version.json is newer (`-e UPDATE_MVP=false` to leave the plugin alone).
 
 **Useful env vars** — add next to `-e EULA=TRUE`:
 
@@ -106,6 +118,8 @@ Wait a couple of minutes on first boot (Paper download + world gen). The command
 | `BEDROCK_PORT` | `19132` | Geyser UDP port |
 | `MEMORY` | `1G` | JVM heap, e.g. `-e MEMORY=2G` |
 | `FLOODGATE_KEY_B64` | (none) | shared Floodgate `key.pem` as base64 — for Bedrock hops between your own servers |
+| `UPDATE_BEDROCK_BRIDGE` | `true` | on start, refresh Geyser / Floodgate / Via* |
+| `UPDATE_MVP` | `true` | on start, replace MultiversePortals if the catalog version is newer |
 
 Example with a custom name and domain:
 
@@ -126,19 +140,28 @@ World and data live in the Docker volume `mvp-data` — you can recreate the con
 
 ## Portal types (signs)
 
-First line of the sign = type. Put a **pressure plate** next to it.
+First line of the sign = type. Hang the wall sign on the **right jamb** (looking at the portal). Walk into the opening (pressure plate optional).
 
 
 | You write                           | What happens                                                            |
 | ----------------------------------- | ----------------------------------------------------------------------- |
-| `[Multi]` or `[mvp]` or `[portal]`  | Finds a live server once and **sticks** to it until you break the sign  |
+| `[Multi]` or `[mvp]` or `[portal]` / `Портал` / `传送门`  | Finds a live server once and **sticks** to it until you break the sign  |
 | `[To]` + IP / port (or `server-id`) | Always goes to that destination                                         |
 | `[Pair]`                            | Creates a code — use the same code on the other server for a round-trip |
+| `Portal` on **this biome’s block** (line 2 empty / `Away`) | Another overworld biome on **this** server (sticky, like Nether) |
 
+Brackets `[]` / `【】` and case do not matter. Same words work on line 1 and on line 2 under `Portal` / `Портал`:
+
+| Kind | EN | RU | ZH |
+|------|----|----|-----|
+| Multi | `Portal` `Multi` `Random` `MVP` | `Портал` `Мульти` `Случайный` `Рандом` | `传送门` `随机` |
+| Away | `Away` | `Авей` `Биом` | `异界` `群系` |
+| To | `To` `Goto` `Server` | `К` `На` `Сервер` | `前往` `到` |
+| Pair | `Pair` `Link` | `Пара` `Связь` | `配对` |
 
 **Dial:** a button next to a random `[Multi]` sign rebinds the sticky destination (club MVP peers first). Does not apply to `[To]` / `[Pair]`.
 
-Sign status while working: `Portal` → `Scan...` → short destination name + `->` (one-way) or `<->` (pair).
+Sign status while working: `Portal` → `Finding a world...` → short destination name + `->` (one-way) or `<->` (pair).
 
 For public one-way hops, players run `/mvp ready` once.
 
@@ -152,7 +175,7 @@ Best option: `[Pair]`.
 
 **Server A**
 
-1. Frame + sign + plate
+1. Frame + sign (plate optional)
 2. Line 1: `[Pair]` (line 2 empty)
 3. Copy the **code** from chat / sign
 
@@ -183,13 +206,25 @@ Or just the address on line 2 if the port is the default `25565`. Legacy: host o
 
 
 
+## Away (another biome, same server)
+
+Like a Nether portal, but between **overworld biomes** on this server.
+
+1. Closed frame from **this biome’s block** (oak logs in a forest, sandstone in a desert, packed ice on a glacier, …). Any size; sign on the **right jamb**
+2. Line 1 = `Portal` / `Портал` / `传送门`. Line 2 empty or `Away` / `Авей` / `异界`
+3. Walk into the purple opening — the first trip binds to one biome (ocean and caves included; not Nether/End) and stays there
+
+The plugin may build a small return ring from **your** biome’s material, sign on the right. If the frame is the wrong block, chat names the one this biome needs. Line 2 `Random` is still a **cross-server** portal even on oak. Away is **not** shown on the public map.
+
+---
+
 ## Local portals (same server)
 
 Wool frame + wall sign (ColorPortals-style):
 
-1. **3×4 wool** of one color, sign on the top middle block
+1. Closed ring of **one wool color** (any size; a 3×4 doorway is a typical small one), sign on the **right jamb**
 2. Line 1 = **name**, line 2 = **channel** (`0`–`9999`)
-3. Plate inside — same color + channel = a ring of warps on **this** server
+3. Walk into the purple opening — same color + channel = a ring of warps on **this** server
 
 `/mvp local list` · admins can import old ColorPortals data with `/mvp local import-colorportals`.
 
@@ -228,6 +263,9 @@ Wool frame + wall sign (ColorPortals-style):
 | **[docs/TECHNICAL.md](docs/TECHNICAL.md)**       | Config, performance, scanners, build                 |
 | **[docs/SCANNERS.md](docs/SCANNERS.md)**         | Public scanner sources for `[Multi]` · collaboration |
 | **[docs/REGISTRY.md](docs/REGISTRY.md)**         | Public catalog (HTTPS) · hub ops only                |
+| **[CHANGELOG.md](CHANGELOG.md)**                 | Release notes                                        |
+| **[docs/GROWTH.md](docs/GROWTH.md)**              | Quiet servers: inbound players, pros / cons (EN/RU/DE) |
+| **[docs/CONCEPTS.md](docs/CONCEPTS.md)**         | Intended behavior (frames, Away, guest home, gates)  |
 | **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** | How the pieces fit                                   |
 
 
@@ -237,7 +275,9 @@ Wool frame + wall sign (ColorPortals-style):
 
 ## Feedback
 
-Ideas, bugs, or suggestions? Please [open a GitHub Issue](https://github.com/mvsews/MultiversePortals/issues/new/choose).
+If something in-game **does not match** the behavior described in this README or in **[docs/CONCEPTS.md](docs/CONCEPTS.md)** (or the other docs), please open an **[Issue](https://github.com/mvsews/MultiversePortals/issues/new/choose)** or a **[Pull Request](https://github.com/mvsews/MultiversePortals/pulls)**. Both are welcome and encouraged — that is how the stated design stays honest.
+
+Ideas and feature requests are welcome the same way.
 
 ---
 
@@ -249,4 +289,4 @@ Ideas, bugs, or suggestions? Please [open a GitHub Issue](https://github.com/mvs
 
 ---
 
-Need players? Install the plugin — your world becomes part of a large cross-server family.
+Need players? See **[docs/GROWTH.md](docs/GROWTH.md)** (English / русский / Deutsch) — install, allow Transfer, list publicly; keep `portals.create: admin` if you want guests without draining your own online.

@@ -17,6 +17,7 @@ out/
 
 # Private / ops — not for the public repo
 deploy/
+docker/vpnbox2-compose.yml
 PROMO.md
 probe_*.py
 check_*.py
@@ -33,3 +34,6 @@ _*.py
 _*.sql
 *.tmp
 *.bak
+/metrics
+/ads
+/reports

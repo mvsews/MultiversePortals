@@ -29,6 +29,17 @@ public final class Portal {
     /** When dest has MVP — portal id to land on (and reverse landing target). */
     private String boundDestPortalId;
 
+    /** Last successful probe of a sticky MULTI dest (ms). */
+    private long boundLastOkAt;
+
+    /** AWAY: dest biome key (e.g. pale_garden) and paired portal. */
+    private String awayDestBiome;
+    private String awayDestPortalId;
+    /** Biome whose frame material this portal was built from (origin). */
+    private String awayOriginBiome;
+    /** Last known paired exit sign (rebuild here if the dest portal/frame is gone). */
+    private PortalFrame awayExit;
+
     public Portal(String id, PortalType type, PortalStatus status, PortalFrame frame, String name, UUID creator) {
         this.id = id;
         this.type = type;
@@ -68,6 +79,25 @@ public final class Portal {
     public String boundDestPortalId() { return boundDestPortalId; }
     public void setBoundDestPortalId(String boundDestPortalId) { this.boundDestPortalId = boundDestPortalId; }
 
+    public long boundLastOkAt() { return boundLastOkAt; }
+    public void setBoundLastOkAt(long boundLastOkAt) { this.boundLastOkAt = boundLastOkAt; }
+
+    public String awayDestBiome() { return awayDestBiome; }
+    public void setAwayDestBiome(String awayDestBiome) { this.awayDestBiome = awayDestBiome; }
+    public String awayDestPortalId() { return awayDestPortalId; }
+    public void setAwayDestPortalId(String awayDestPortalId) { this.awayDestPortalId = awayDestPortalId; }
+    public String awayOriginBiome() { return awayOriginBiome; }
+    public void setAwayOriginBiome(String awayOriginBiome) { this.awayOriginBiome = awayOriginBiome; }
+    public PortalFrame awayExit() { return awayExit; }
+    public void setAwayExit(PortalFrame awayExit) { this.awayExit = awayExit; }
+    public boolean hasAwayExit() {
+        return awayExit != null && awayExit.world() != null && !awayExit.world().isBlank();
+    }
+
+    public boolean hasAwayDestination() {
+        return awayDestBiome != null && !awayDestBiome.isBlank();
+    }
+
     public boolean hasBoundDestination() {
         return boundHost != null && !boundHost.isBlank()
                 && (boundPort > 0 || boundJavaPort > 0);
@@ -82,6 +112,9 @@ public final class Portal {
     }
 
     public boolean isTravelReady() {
+        if (type == PortalType.AWAY) {
+            return status == PortalStatus.ACTIVE && hasAwayDestination();
+        }
         if (type == PortalType.MULTI) {
             return status == PortalStatus.ACTIVE && hasBoundDestination();
         }

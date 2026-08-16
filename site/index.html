@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Multiverse Portals — visit other Minecraft worlds</title>
+  <meta name="description" content="A free plugin for Paper. Put up a sign, walk into the portal, and travel to another server — no shared proxy needed.">
+  <link rel="icon" type="image/png" href="/fav/favicon-96x96.png?v=20260728c" sizes="96x96">
+  <link rel="icon" type="image/svg+xml" href="/fav/favicon.svg?v=20260728c">
+  <link rel="shortcut icon" href="/fav/favicon.ico?v=20260728c">
+  <link rel="apple-touch-icon" sizes="180x180" href="/fav/apple-touch-icon.png?v=20260728c">
+  <link rel="manifest" href="/manifest.json?v=20260728c">
+  <meta name="theme-color" content="#0b1220">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="MV Portals">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Manrope:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css?v=20260816f">
+</head>
+<body>
+  <header class="hero">
+    <img class="hero__bg" src="/assets/banner.png" alt="" width="1920" height="640" fetchpriority="high">
+    <div class="hero__veil"></div>
+    <nav class="lang-bar" aria-label="Language">
+      <div class="lang-switch" role="group" data-i18n-aria="langLabel">
+        <button type="button" data-lang="en" aria-pressed="false">EN</button>
+        <button type="button" data-lang="ru" aria-pressed="false">RU</button>
+        <button type="button" data-lang="zh" aria-pressed="false">中文</button>
+      </div>
+    </nav>
+    <div class="hero__inner">
+      <p class="brand" data-i18n="brand">Multiverse Portals</p>
+      <h1 data-i18n-html="headline">Many servers.<br>One portal network.</h1>
+      <p class="lede lede--short" data-i18n-html="ledeShort">No shared proxy, extra programs, or complex setup — just one plugin, and portals between real Minecraft servers work.</p>
+      <div class="cta">
+        <a class="btn btn--primary" id="dl-jar" href="/download/MultiversePortals.jar?v=20260723a" data-i18n="download">Download the plugin</a>
+        <a class="btn btn--ghost" href="https://github.com/mvsews/MultiversePortals" id="repo-link" data-i18n="source">Source code</a>
+      </div>
+      <p class="meta" id="jar-meta"><span data-i18n="jarMetaDefault">Free plugin · works with the map on this site</span></p>
+      <p class="lede lede--story" data-i18n-html="ledeStory">Imagine: you build a portal in your world, step through, and you’re visiting friends on another server. Then a third world to explore — and home again, all through portals inside the game. <strong>From a portal you can go to another server, and players from other servers can arrive on yours!</strong></p>
+    </div>
+  </header>
+
+  <main>
+    <section class="idea">
+      <h2 data-i18n="ideaTitle">How it works</h2>
+      <p data-i18n-html="ideaBody">Your server stays yours. You don’t need to move into someone else’s network. A portal works like a Nether portal: walk in, and the game sends you to another server. Line 1 is always <code>Portal</code>. Line 2 is where it goes: <code>Random</code> for a surprise visit, or a friend’s IP and port for a fixed destination. Read below for the details.</p>
+      <ul class="bullets">
+        <li data-i18n="bullet1">Play from a PC (Java) or phone / console (Bedrock via Geyser) — the plugin routes players by their client and respects the destination you set</li>
+        <li data-i18n="bullet2">If people can reach you from the internet, your world can appear on the map below — and you’ll see your neighbors!</li>
+        <li data-i18n="bullet3">Need portals only inside your own server — between villages or biomes? Build them from wool: a local portal system that never leaves your world</li>
+      </ul>
+    </section>
+
+    <section class="graph-section" id="map">
+      <div class="graph-head">
+        <h2 data-i18n="graphTitle">Portal map</h2>
+        <p class="graph-sub"><span data-i18n="graphSub">Live map · updates about once a minute</span> · <a class="inline-link" href="/list" data-i18n="listLink">Server list</a></p>
+        <p class="stat" id="stat-line" data-i18n="loading">Loading…</p>
+      </div>
+      <div class="graph-wrap">
+        <div class="graph-toolbar" role="toolbar" data-i18n-aria="graphControls">
+          <div class="graph-search" id="graph-search">
+            <button type="button" class="gbtn gbtn--icon" id="search-toggle" data-i18n-title="searchTitle" title="Search" aria-expanded="false" aria-controls="graph-search-input">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="10.5" cy="10.5" r="6.5"/>
+                <path d="M16 16l5 5"/>
+              </svg>
+            </button>
+            <input type="search" class="graph-search-input" id="graph-search-input" data-i18n-placeholder="searchPlaceholder" placeholder="Name or address…" autocomplete="off" spellcheck="false" />
+          </div>
+          <span class="toolbar-sep" aria-hidden="true"></span>
+          <button type="button" class="gbtn" id="zoom-out" data-i18n-title="zoomOut" title="Zoom out">−</button>
+          <span class="zoom-label" id="zoom-label">100%</span>
+          <button type="button" class="gbtn" id="zoom-in" data-i18n-title="zoomIn" title="Zoom in">+</button>
+          <button type="button" class="gbtn gbtn--text" id="zoom-reset" data-i18n="zoomReset" data-i18n-title="resetTitle" title="Reset the map view">Reset</button>
+          <span class="toolbar-sep" aria-hidden="true"></span>
+          <button type="button" class="gbtn gbtn--text" id="fold-all" data-i18n="fold" data-i18n-title="foldTitle" title="Hide portal links">Hide</button>
+          <button type="button" class="gbtn gbtn--text" id="unfold-all" data-i18n="unfold" data-i18n-title="unfoldTitle" title="Show portal links">Show</button>
+          <span class="toolbar-sep" aria-hidden="true"></span>
+          <button type="button" class="gbtn gbtn--icon" id="map-expand" data-i18n-title="expandMapTitle" title="Expand map" aria-pressed="false">
+            <svg class="ico-expand" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="15 3 21 3 21 9"/>
+              <polyline points="9 21 3 21 3 15"/>
+              <line x1="21" y1="3" x2="14" y2="10"/>
+              <line x1="3" y1="21" x2="10" y2="14"/>
+            </svg>
+            <svg class="ico-collapse" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="4 14 10 14 10 20"/>
+              <polyline points="20 10 14 10 14 4"/>
+              <line x1="10" y1="14" x2="3" y2="21"/>
+              <line x1="14" y1="10" x2="21" y2="3"/>
+            </svg>
+          </button>
+        </div>
+        <svg id="graph" viewBox="0 0 960 520" role="img" data-i18n-aria="graphAria" aria-label="Map of linked servers"></svg>
+        <div class="graph-empty" id="graph-empty" hidden data-i18n="empty">Nobody on the map yet — your server could be the first.</div>
+      </div>
+      <div class="graph-detail" id="graph-detail" hidden></div>
+      <ul class="graph-legend">
+        <li><span class="dot" aria-hidden="true"></span><span data-i18n="legendPeer">Has this plugin</span></li>
+        <li><span class="dot dot--ext" aria-hidden="true"></span><span data-i18n="legendExt">World without the plugin</span></li>
+        <li class="legend-note" data-i18n="legendHint">Scroll to zoom · drag empty space to move · drag a circle · click a server to hide or show its links</li>
+      </ul>
+      <ul class="server-list" id="server-list"></ul>
+    </section>
+
+    <section class="get" id="setup">
+      <h2 data-i18n="getTitle">Join the map in three steps</h2>
+
+      <div class="docker-fast" id="docker-fast">
+        <h3 data-i18n="dockerTitle">Install in 1 minute (Docker)</h3>
+        <p class="docker-fast-lead" data-i18n="dockerLead">One command — Paper + Multiverse Portals + Geyser/Floodgate, then you’re on the map.</p>
+        <div class="cmd-row">
+          <pre class="cmd-line" id="docker-cmd" tabindex="0">docker run -d --name minecraft_mvp --network host -e EULA=TRUE -v mvp-data:/data mvsews/mvp &amp;&amp; IP=$(curl -fsS https://api.ipify.org) &amp;&amp; echo "Server ready — connect Java $IP:25565 | Bedrock $IP:19132"</pre>
+          <button type="button" class="cmd-copy" id="docker-cmd-copy" data-i18n="copyCmd" data-copy='docker run -d --name minecraft_mvp --network host -e EULA=TRUE -v mvp-data:/data mvsews/mvp && IP=$(curl -fsS https://api.ipify.org) && echo "Server ready — connect Java $IP:25565 | Bedrock $IP:19132"'>Copy</button>
+        </div>
+        <p class="docker-fast-note" data-i18n="dockerNote">Needs Docker on Linux (host network). Prefer a manual Paper install? Steps below.</p>
+      </div>
+
+      <p class="build-lead" data-i18n="getLead">You need a Paper server (version 1.21 or newer). Then install this plugin and allow guests to arrive.</p>
+
+      <div class="steps">
+        <article class="step">
+          <h3 data-i18n="get1Title">1. Get Paper and put the plugin in</h3>
+          <div class="step-body" data-i18n-html="get1Body"></div>
+        </article>
+        <article class="step">
+          <h3 data-i18n="get2Title">2. Allow players to arrive from other worlds</h3>
+          <div class="step-body" data-i18n-html="get2Body"></div>
+        </article>
+        <article class="step">
+          <h3 data-i18n="get3Title">3. Restart and check</h3>
+          <div class="step-body" data-i18n-html="get3Body"></div>
+        </article>
+      </div>
+
+      <div class="extra">
+        <h3 data-i18n="getExtraTitle">Want phone / console players too? (Geyser)</h3>
+        <div class="step-body" data-i18n-html="getExtraBody"></div>
+      </div>
+
+      <p class="fine" data-i18n-html="fine"></p>
+    </section>
+
+    <section class="build" id="build">
+      <h2 data-i18n="buildTitle">How to build and use a portal</h2>
+      <p class="build-lead" data-i18n="buildLead">Three kinds: to another server, to another biome (Away), or wool between spots on this world. Walk into the purple opening — no pressure plate.</p>
+
+      <h3 class="build-h3" data-i18n="buildCrossTitle">To another server</h3>
+      <p class="build-p" data-i18n-html="buildCrossIntro">Build a closed frame like a Nether portal (opening <strong>2×3</strong>, any solid blocks). Hang the <strong>sign on the right jamb</strong> (looking at the portal). The hole lights up purple. Walk in to travel — a pressure plate is not needed.</p>
+
+      <div class="schematics">
+        <figure class="schematic">
+          <figcaption data-i18n="schematicFront">Front — sign on the right, purple sheet inside</figcaption>
+          <div class="sch sch--nether" aria-hidden="true">
+            <span class="b b--stone"></span><span class="b b--stone"></span><span class="b b--stone"></span><span class="b b--stone"></span>
+            <span class="b b--stone"></span><span class="b b--sheet"></span><span class="b b--sheet"></span><span class="b b--stone"></span>
+            <span class="b b--stone"></span><span class="b b--sheet"></span><span class="b b--sheet"></span><span class="b b--stone b--sign" title="Sign"></span>
+            <span class="b b--stone"></span><span class="b b--sheet"></span><span class="b b--sheet"></span><span class="b b--stone"></span>
+            <span class="b b--stone"></span><span class="b b--stone"></span><span class="b b--stone"></span><span class="b b--stone"></span>
+          </div>
+          <p class="sch-key" data-i18n-html="schematicFrontKey"><span class="key key--stone"></span> any solid block &nbsp; <span class="key key--sheet"></span> walk in here &nbsp; <span class="key key--sign"></span> sign</p>
+        </figure>
+      </div>
+
+      <p class="build-p" data-i18n-html="buildSignTypes">On the sign: <strong>line 1</strong> always <code>Portal</code>, <strong>line 2</strong> = where to go:</p>
+      <div class="sign-types">
+        <div class="sign-type">
+          <h4 data-i18n="signMultiTitle">Random server</h4>
+          <pre class="sign-face" aria-hidden="true">Portal
+Random
+
+</pre>
+          <p data-i18n-html="signMultiBody">Finds an open world once and <strong>remembers</strong> it. Want another? Put a <strong>button</strong> by the sign (Howl’s dial) or break the sign and place a new one.</p>
+        </div>
+        <div class="sign-type">
+          <h4 data-i18n="signToTitle">To a friend by IP</h4>
+          <pre class="sign-face" aria-hidden="true">Portal
+1.2.3.4:25565
+</pre>
+          <p data-i18n-html="signToBody">Line 2 = <code>IP:port</code> (or just the address if the port is the default <code>25565</code>). On their side they write your address the same way.</p>
+        </div>
+        <div class="sign-type">
+          <h4 data-i18n="signAwayCardTitle">To another biome</h4>
+          <pre class="sign-face" aria-hidden="true">Portal
+Away
+
+</pre>
+          <p data-i18n-html="signAwayCardBody">Same ring, but the frame is <strong>this biome’s block</strong>. Line 2 empty or <code>Away</code>. Stays on this server — details below.</p>
+        </div>
+        <div class="sign-type">
+          <h4 data-i18n="signPairTitle">Optional: link with a code</h4>
+          <pre class="sign-face" aria-hidden="true">Portal
+Pair
+
+</pre>
+          <p data-i18n-html="signPairBody">Links two specific portals by server and portal code. On A leave line 3 empty — you get a code; on B write <code>Portal</code> / <code>Pair</code> / that code. For most people IP + port is easier.</p>
+        </div>
+      </div>
+
+      <div class="activate">
+        <h4 data-i18n="activateTitle">How to go through</h4>
+        <ol>
+          <li data-i18n="activate1">Walk into the purple sheet and wait a moment. Standing on the top of the frame does not send you.</li>
+          <li class="activate-ready" data-i18n-html="activate2">Only if the server requires it: type <code>/mvp ready</code> once in chat (allows one-way travel to a public world that has no portal back to yours). Off by default in config (<code>ready.confirm: false</code>) — you can turn confirmation on so players don’t get lost and know there is no return portal. If the other side has a return portal, this confirm is not needed.</li>
+        </ol>
+      </div>
+
+      <h3 class="build-h3" data-i18n="buildAwayTitle">Away — another biome on this server</h3>
+      <p class="build-p" data-i18n-html="buildAwayIntro">Same closed ring, but the frame must be <strong>this biome’s block</strong>: oak logs in a forest, sandstone in a desert, packed ice on a glacier, and so on. Line 1 is <code>Portal</code>. Line 2 may be empty or <code>Away</code>. If line 2 is <code>Random</code>, it is a cross-server portal even on oak.</p>
+      <div class="schematics">
+        <figure class="schematic">
+          <figcaption data-i18n="schematicAway">Away frame (biome material)</figcaption>
+          <div class="sch sch--nether" aria-hidden="true">
+            <span class="b b--wood"></span><span class="b b--wood"></span><span class="b b--wood"></span><span class="b b--wood"></span>
+            <span class="b b--wood"></span><span class="b b--sheet"></span><span class="b b--sheet"></span><span class="b b--wood"></span>
+            <span class="b b--wood"></span><span class="b b--sheet"></span><span class="b b--sheet"></span><span class="b b--wood b--sign" title="Sign"></span>
+            <span class="b b--wood"></span><span class="b b--sheet"></span><span class="b b--sheet"></span><span class="b b--wood"></span>
+            <span class="b b--wood"></span><span class="b b--wood"></span><span class="b b--wood"></span><span class="b b--wood"></span>
+          </div>
+          <p class="sch-key" data-i18n-html="schematicAwayKey"><span class="key key--wood"></span> this biome’s block &nbsp; <span class="key key--sheet"></span> walk in &nbsp; <span class="key key--sign"></span> sign</p>
+        </figure>
+      </div>
+      <p class="build-p" data-i18n-html="buildAwayBody">The first walk binds to one overworld biome (oceans and caves included; not Nether/End) and stays there, like a Nether portal. The plugin can build a small return ring from <strong>your</strong> biome’s material. Away portals are <strong>not</strong> shown on the public map. If the frame is the wrong block, chat tells you which one this biome needs.</p>
+
+      <h3 class="build-h3" data-i18n="buildLocalTitle">Inside this server (wool)</h3>
+      <p class="build-p" data-i18n-html="buildLocalIntro">Use this when you need portals between places on the <strong>same server</strong> (villages, bases). Frame of <strong>one wool color</strong>, any closed ring — the 3×4 doorway below is just an example. Hang the <strong>sign on the right jamb</strong> (looking at the portal). Walk into the purple sheet — no plate.</p>
+
+      <div class="schematics">
+        <figure class="schematic">
+          <figcaption data-i18n="schematicLocal">Wool portal (any size — 3×4 shown)</figcaption>
+          <div class="sch sch--wool" aria-hidden="true">
+            <span class="b b--wool"></span><span class="b b--wool"></span><span class="b b--wool"></span>
+            <span class="b b--wool"></span><span class="b b--sheet"></span><span class="b b--wool b--sign"></span>
+            <span class="b b--wool"></span><span class="b b--sheet"></span><span class="b b--wool"></span>
+            <span class="b b--wool"></span><span class="b b--wool"></span><span class="b b--wool"></span>
+          </div>
+          <p class="sch-key" data-i18n-html="schematicLocalKey"><span class="key key--wool"></span> same color wool &nbsp; <span class="key key--sign"></span> sign &nbsp; <span class="key key--sheet"></span> walk in</p>
+        </figure>
+      </div>
+      <p class="build-p" data-i18n-html="buildLocalSign">Sign: <strong>line 1</strong> = name, <strong>line 2</strong> = channel number (<code>0</code>–<code>9999</code>). Same color + same channel = linked (A→B→C→A). Walk in (a button under the sign still works).</p>
+    </section>
+  </main>
+
+  <section class="feedback" id="feedback">
+    <h2 data-i18n="feedbackTitle">Found a bug or have an idea?</h2>
+    <p class="build-lead" data-i18n-html="feedbackLead">Tell us on <strong>GitHub Issues</strong> — bug reports and suggestions are welcome. Leave a proposal if you want something new in the plugin.</p>
+    <p class="feedback-cta">
+      <a class="btn btn--primary" href="https://github.com/mvsews/MultiversePortals/issues/new/choose" target="_blank" rel="noopener" data-i18n="feedbackBtn">Open a GitHub Issue</a>
+      <a class="btn btn--ghost" href="https://github.com/mvsews/MultiversePortals/issues" target="_blank" rel="noopener" data-i18n="feedbackBrowse">Browse issues &amp; ideas</a>
+    </p>
+  </section>
+
+  <section class="support" id="support" aria-labelledby="support-title">
+    <div class="support__heart" aria-hidden="true" title="❤">
+      <!-- Classic Minecraft-style heart (7×6), no dark missing corner -->
+      <svg class="mc-heart" viewBox="0 0 7 6" width="56" height="48" role="img" shape-rendering="crispEdges">
+        <g fill="#e74c4c">
+          <rect x="1" y="0" width="2" height="1"/>
+          <rect x="4" y="0" width="2" height="1"/>
+          <rect x="0" y="1" width="7" height="1"/>
+          <rect x="0" y="2" width="7" height="1"/>
+          <rect x="1" y="3" width="5" height="1"/>
+          <rect x="2" y="4" width="3" height="1"/>
+          <rect x="3" y="5" width="1" height="1"/>
+        </g>
+        <g fill="#ff9a9a">
+          <rect x="1" y="1" width="1" height="1"/>
+          <rect x="2" y="2" width="1" height="1"/>
+        </g>
+      </svg>
+    </div>
+    <h2 id="support-title" data-i18n="supportTitle">Support the plugin</h2>
+    <p class="build-lead" data-i18n-html="supportLead">Leave us a star on GitHub and on plugin platforms — and connect your servers with friends’ worlds. Let’s build a global portal network together.</p>
+    <p class="support-cta">
+      <a class="btn btn--primary btn--platform" href="https://hangar.papermc.io/mvse/MultiversePortals" target="_blank" rel="noopener">
+        <img class="btn__favicon" src="/img/hangar.png" width="20" height="20" alt="" decoding="async">
+        <span data-i18n="supportHangar">Hangar</span>
+      </a>
+      <a class="btn btn--primary btn--platform" href="https://modrinth.com/project/multiverseportals" target="_blank" rel="noopener">
+        <img class="btn__favicon" src="/img/modrinth.png" width="20" height="20" alt="" decoding="async">
+        <span data-i18n="supportModrinth">Modrinth</span>
+      </a>
+      <a class="btn btn--primary btn--platform" href="https://www.curseforge.com/minecraft/bukkit-plugins/multiverse-portals-mvse" target="_blank" rel="noopener">
+        <img class="btn__favicon" src="/img/curseforge.png" width="20" height="20" alt="" decoding="async">
+        <span data-i18n="supportCurseForge">CurseForge</span>
+      </a>
+      <a class="btn btn--ghost" href="https://github.com/mvsews/MultiversePortals" target="_blank" rel="noopener" data-i18n="supportStar">★ Star on GitHub</a>
+    </p>
+  </section>
+
+  <footer>
+    <span>mp.mvse.ws</span>
+    <span>·</span>
+    <span data-i18n="footerNote">Open worlds · map updates by itself</span>
+    <span>·</span>
+    <a href="https://github.com/mvsews/MultiversePortals" data-i18n="source">Source code</a>
+    <span>·</span>
+    <a href="https://github.com/mvsews/MultiversePortals/releases" data-i18n="releases">Releases</a>
+  </footer>
+
+  <script src="/i18n.js?v=20260816f"></script>
+  <script src="/app.js?v=20260816a"></script>
+</body>
+</html>
