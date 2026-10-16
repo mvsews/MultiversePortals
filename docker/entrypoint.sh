@@ -11,6 +11,7 @@ export MEMORY="${MEMORY:-1G}"
 # Standard Minecraft ports (host network: same inside and outside)
 PUBLIC_PORT="${PUBLIC_PORT:-25565}"
 BEDROCK_PORT="${BEDROCK_PORT:-19132}"
+MVP_FEDERATION_PORT="${MVP_FEDERATION_PORT:-25765}"
 
 mkdir -p /data/plugins/MultiversePortals \
          /data/plugins/Geyser-Spigot \
@@ -52,6 +53,7 @@ fi
 
 export MVP_PUBLIC_HOST="${PUBLIC_HOST:-}"
 export MVP_PUBLIC_PORT="${PUBLIC_PORT}"
+export MVP_FEDERATION_PORT="${MVP_FEDERATION_PORT}"
 
 # Escape for YAML double-quoted string
 yaml_escape() {
@@ -62,7 +64,7 @@ export MVP_DISPLAY_NAME_ESC
 
 # Seed or refresh advertise address for the public catalog (mp.mvse.ws)
 if [[ ! -f /data/plugins/MultiversePortals/config.yml ]]; then
-  envsubst '${MVP_PUBLIC_HOST} ${MVP_PUBLIC_PORT} ${MVP_DISPLAY_NAME_ESC}' \
+  envsubst '${MVP_PUBLIC_HOST} ${MVP_PUBLIC_PORT} ${MVP_DISPLAY_NAME_ESC} ${MVP_FEDERATION_PORT}' \
     < /image/mvp/config.yml.tmpl \
     > /data/plugins/MultiversePortals/config.yml
 else
@@ -71,6 +73,8 @@ else
       /data/plugins/MultiversePortals/config.yml || true
   fi
   sed -i -E "s|^(  public-port:).*|\1 ${PUBLIC_PORT}|" \
+    /data/plugins/MultiversePortals/config.yml || true
+  sed -i -E "/^federation:/,/^[^[:space:]]/ s|^(  port:).*|\1 ${MVP_FEDERATION_PORT}|" \
     /data/plugins/MultiversePortals/config.yml || true
   sed -i -E 's|^(  discover-public-ip:).*|\1 true|' \
     /data/plugins/MultiversePortals/config.yml || true

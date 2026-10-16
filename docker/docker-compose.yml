@@ -28,6 +28,8 @@ services:
       PUBLIC_HOST: "${PUBLIC_HOST:-}"
       PUBLIC_PORT: "${PUBLIC_PORT:-25565}"
       BEDROCK_PORT: "${BEDROCK_PORT:-19132}"
+      # Federation API port. Set this to the free host port used by the hub's Caddy proxy.
+      MVP_FEDERATION_PORT: "${MVP_FEDERATION_PORT:-25765}"
       # Empty = funny English name (persisted). Or set SERVER_NAME / MOTD.
       SERVER_NAME: "${SERVER_NAME:-}"
       # FLOODGATE_KEY_B64: ""
